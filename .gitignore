@@ -1,0 +1,19 @@
+# Data (contains user configs, auth tokens, player data)
+data/
+.minecraft/
+minecraft-auth/
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker build artifacts
+mc-presence-bot.tar.gz
+
+# Misc
+[internal]
+*.log

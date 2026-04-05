@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  mc-presence:
+    build: .
+    container_name: mc-presence-bot
+    restart: unless-stopped
+    # Use host network so the bot app can reach the CobbleBridge plugin on localhost
+    network_mode: "host"
+    volumes:
+      - mc-auth:/app/.minecraft
+      - mc-data:/app/data
+    environment:
+      MC_HOST: "your.server.com"
+      MC_PORT: "25565"
+      WEB_PORT: "3100"
+      OWNER_USERNAME: ""  # Your MC username — enables admin commands
+      # CobbleBridge plugin connection (optional)
+      BRIDGE_URL: "http://localhost:3101"
+      BRIDGE_SECRET: "changeme"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mc-auth:
+    driver: local
+  mc-data:
+    driver: local

@@ -1,0 +1,15 @@
+{
+  "name": "mc-presence-bot",
+  "version": "2.0.0",
+  "description": "Multi-account headless Minecraft presence bot with scheduling",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "mineflayer": "^4.35.0",
+    "socket.io": "^4.7.5"
+  }
+}

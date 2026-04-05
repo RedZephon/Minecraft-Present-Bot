@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>MC Presence</title>
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MC Presence" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0c0e11" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-180.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-base: #0c0e11;
+      --bg-raised: #13161b;
+      --bg-surface: #191d24;
+      --bg-hover: #1f2530;
+      --bg-input: #111419;
+      --border: #262c36;
+      --border-focus: #3d4654;
+      --text-primary: #dfe3ea;
+      --text-secondary: #7a8494;
+      --text-muted: #4d5768;
+      --green: #3dd68c;
+      --green-dim: #13291f;
+      --green-border: #1f4d38;
+      --red: #e5534b;
+      --red-dim: #291515;
+      --red-border: #4d1f1f;
+      --amber: #d4a72c;
+      --amber-dim: #29241a;
+      --amber-border: #4d3f1a;
+      --blue: #539bf5;
+      --blue-dim: #151f29;
+      --blue-border: #1a3050;
+      --purple: #b392f0;
+      --purple-dim: #1f1529;
+      --radius: 6px;
+      --radius-lg: 10px;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'IBM Plex Sans', -apple-system, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- Layout ---- */
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Header ---- */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header h1 { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+    .header h1 span { color: var(--text-muted); font-weight: 400; }
+    .header-stats { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); display: flex; gap: 16px; }
+    .header-stats .val { color: var(--text-primary); font-weight: 500; }
+    .header-right { display: flex; gap: 8px; align-items: center; }
+
+    /* ---- Buttons ---- */
+    button {
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    button:hover { background: var(--bg-hover); border-color: var(--border-focus); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    button:disabled:hover { background: var(--bg-surface); border-color: var(--border); }
+    .btn-green { background: var(--green-dim); border-color: var(--green-border); color: var(--green); }
+    .btn-green:hover { background: #1a3d2c; }
+    .btn-red { background: var(--red-dim); border-color: var(--red-border); color: var(--red); }
+    .btn-red:hover { background: #3d1e1e; }
+    .btn-amber { background: var(--amber-dim); border-color: var(--amber-border); color: var(--amber); }
+    .btn-amber:hover { background: #3d321a; }
+    .btn-blue { background: var(--blue-dim); border-color: var(--blue-border); color: var(--blue); }
+    .btn-blue:hover { background: #1a3d5e; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-xs { padding: 3px 8px; font-size: 11px; }
+    .btn-icon { padding: 5px 8px; font-size: 16px; line-height: 1; }
+
+    /* ---- Main ---- */
+    .main {
+      display: grid;
+      grid-template-columns: 310px 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    /* ---- Left column ---- */
+    .bots-column {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .bots-column::-webkit-scrollbar { width: 4px; }
+    .bots-column::-webkit-scrollbar-track { background: transparent; }
+    .bots-column::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Bot card */
+    .bot-card {
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .bot-card:hover { border-color: var(--border-focus); }
+    .bot-card.selected { border-color: var(--blue); background: var(--blue-dim); }
+
+    .bot-card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .bot-avatar {
+      width: 36px; height: 36px; border-radius: 6px;
+      image-rendering: pixelated; background: var(--bg-surface); flex-shrink: 0;
+    }
+    .bot-info { flex: 1; min-width: 0; }
+    .bot-label { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bot-username { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .bot-meta-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+
+    .mode-badge {
+      font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 2px 7px; border-radius: 3px; line-height: 1.4;
+    }
+    .mode-badge.manual { color: var(--text-muted); background: var(--bg-surface); }
+    .mode-badge.permanent { color: var(--green); background: var(--green-dim); }
+    .mode-badge.scheduled { color: var(--amber); background: var(--amber-dim); }
+    .mode-badge.ai-admin-afk { color: var(--blue); background: var(--blue-dim); }
+    .mode-badge.ai-support { color: #4ade80; background: #0f291a; }
+    .mode-badge.ai-disguise { color: var(--purple); background: var(--purple-dim); }
+    .mode-badge.paused { color: var(--red); background: var(--red-dim); }
+    .mode-badge.bridge { color: #56d4ef; background: #152529; }
+
+    .schedule-label { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+
+    .bot-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 3px 8px; border-radius: 4px;
+    }
+    .status-badge .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .status-badge.connected { color: var(--green); background: var(--green-dim); }
+    .status-badge.connected .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-badge.connecting { color: var(--amber); background: var(--amber-dim); }
+    .status-badge.connecting .dot { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+    .status-badge.disconnected { color: var(--text-muted); background: var(--bg-surface); }
+    .status-badge.disconnected .dot { background: var(--text-muted); }
+
+    .status-badge.yielded { color: var(--purple); background: var(--purple-dim); }
+    .status-badge.yielded .dot { background: var(--purple); }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .bot-card-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+    .bot-uptime { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+
+    .add-bot-card {
+      border: 1px dashed var(--border); border-radius: var(--radius-lg); padding: 12px;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      color: var(--text-muted); font-size: 13px; cursor: pointer; transition: all 0.15s ease;
+      background: transparent; flex-shrink: 0;
+    }
+    .add-bot-card:hover { border-color: var(--border-focus); color: var(--text-secondary); background: var(--bg-raised); }
+
+    /* ---- Right column ---- */
+    .detail-column { display: flex; flex-direction: column; min-height: 0; gap: 12px; }
+
+    .chat-panel {
+      display: flex; flex-direction: column; background: var(--bg-raised);
+      border: 1px solid var(--border); border-radius: var(--radius-lg); flex: 1; min-height: 0;
+    }
+    .chat-panel-header {
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      font-family: var(--mono); font-size: 12px; font-weight: 500;
+      color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; flex-shrink: 0;
+    }
+    .chat-panel-header .chat-bot-name { color: var(--text-primary); }
+
+    .chat-log { flex: 1; overflow-y: auto; padding: 6px 0; min-height: 0; }
+    .chat-log::-webkit-scrollbar { width: 4px; }
+    .chat-log::-webkit-scrollbar-track { background: transparent; }
+    .chat-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .chat-entry {
+      padding: 2px 14px; font-family: var(--mono); font-size: 12px; line-height: 1.6; word-break: break-word;
+    }
+    .chat-entry:hover { background: var(--bg-surface); }
+    .chat-entry .ts { color: var(--text-muted); margin-right: 8px; font-size: 11px; }
+    .chat-entry .sender { font-weight: 600; margin-right: 4px; }
+    .chat-entry.type-chat .sender { color: var(--blue); }
+    .chat-entry.type-self .sender { color: var(--green); }
+    .chat-entry.type-whisper .sender { color: var(--purple); }
+    .chat-entry.type-system { color: var(--text-secondary); font-style: italic; }
+    .chat-entry.type-error { color: var(--red); }
+    .chat-entry.type-server { color: var(--text-muted); }
+    .chat-entry.type-join { color: var(--green); opacity: 0.7; }
+    .chat-entry.type-leave { color: var(--text-muted); opacity: 0.7; }
+    .chat-entry.type-command .sender { color: var(--amber); }
+
+    .chat-input-row { display: flex; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .chat-input-row input {
+      flex: 1; background: var(--bg-input); border: none; padding: 10px 14px;
+      font-family: var(--mono); font-size: 13px; color: var(--text-primary);
+      outline: none; border-radius: 0 0 0 var(--radius-lg);
+    }
+    .chat-input-row input::placeholder { color: var(--text-muted); }
+    .chat-input-row input:disabled { opacity: 0.4; }
+    .chat-input-row button { border-radius: 0 0 var(--radius-lg) 0; border: none; border-left: 1px solid var(--border); padding: 10px 16px; }
+
+    .players-bar {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 10px 14px; flex-shrink: 0;
+    }
+    .players-bar-header {
+      font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .players-bar-header .count { background: var(--bg-surface); padding: 0 6px; border-radius: 8px; font-size: 10px; }
+    .players-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .player-chip {
+      display: inline-flex; align-items: center; gap: 5px; background: var(--bg-surface);
+      padding: 3px 8px 3px 4px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
+    }
+    .player-chip img { width: 16px; height: 16px; border-radius: 2px; image-rendering: pixelated; }
+
+    .empty-chat {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      color: var(--text-muted); font-size: 13px; padding: 20px; text-align: center;
+    }
+
+    /* ---- Modals ---- */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center; z-index: 200;
+      opacity: 0; pointer-events: none; transition: opacity 0.15s ease;
+    }
+    .modal-overlay.visible { opacity: 1; pointer-events: all; }
+    .modal {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 20px; width: 420px; max-width: 92vw; max-height: 90vh; overflow-y: auto;
+    }
+    .modal h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+    .modal .field { margin-bottom: 12px; }
+    .modal label {
+      display: block; font-size: 11px; font-weight: 500; color: var(--text-secondary);
+      text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
+    }
+    .modal input[type="text"], .modal input[type="time"], .modal input[type="number"], .modal select {
+      width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px;
+      padding: 7px 10px; font-family: var(--mono); font-size: 12px; color: var(--text-primary); outline: none;
+    }
+    .modal input:focus, .modal select:focus { border-color: var(--border-focus); }
+    .modal select { appearance: none; cursor: pointer; }
+
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .field-note { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .checkbox-row input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; }
+    .checkbox-row span { font-size: 13px; color: var(--text-secondary); }
+
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .modal-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+    /* ---- Toast ---- */
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; padding: 10px 16px;
+      border-radius: var(--radius); font-size: 13px; background: var(--bg-surface);
+      border: 1px solid var(--border); color: var(--text-primary);
+      opacity: 0; transform: translateY(10px); transition: all 0.25s ease;
+      z-index: 300; pointer-events: none;
+    }
+    .toast.visible { opacity: 1; transform: translateY(0); }
+    .toast.warn { border-color: #5e4d1a; color: var(--amber); }
+    .toast.error { border-color: #5e2a2a; color: var(--red); }
+
+    /* ---- Responsive ---- */
+    @media (max-width: 720px) {
+      .app {
+        padding: 0;
+        gap: 0;
+        height: 100vh;
+        height: 100dvh;
+        grid-template-rows: auto 1fr auto;
+        padding-top: env(safe-area-inset-top);
+      }
+
+      .header {
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        border-top: none;
+        padding: 10px 14px;
+      }
+      .header h1 { font-size: 14px; }
+      .header h1 span { display: none; }
+      .header-stats { font-size: 11px; gap: 10px; }
+      .header-right { gap: 6px; }
+      .header-right .btn-sm { padding: 4px 8px; font-size: 11px; }
+
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr;
+        gap: 0;
+        min-height: 0;
+      }
+
+      .bots-column {
+        flex-direction: column;
+        overflow-x: visible;
+        overflow-y: auto;
+        max-height: none;
+        padding: 10px;
+        gap: 8px;
+      }
+      .bots-column.mobile-hidden { display: none; }
+
+      .bot-card { min-width: unset; flex-shrink: unset; }
+
+      .detail-column { gap: 0; }
+      .detail-column.mobile-hidden { display: none; }
+
+      .chat-panel { border-radius: 0; border-left: none; border-right: none; }
+      .chat-panel-header { padding: 8px 12px; }
+
+      .chat-input-row input { padding: 12px 14px; font-size: 14px; border-radius: 0; }
+      .chat-input-row button { padding: 12px 16px; border-radius: 0; }
+
+      .players-bar { border-radius: 0; border-left: none; border-right: none; }
+
+      .auth-banner { border-radius: 0; border-left: none; border-right: none; }
+      .auth-banner-code { font-size: 24px; }
+
+      /* Mobile bottom tab bar */
+      .mobile-tabs {
+        display: flex;
+        border-top: 1px solid var(--border);
+        background: var(--bg-raised);
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      .mobile-tab {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 0 6px;
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        background: none;
+        border: none;
+        border-radius: 0;
+        cursor: pointer;
+        transition: color 0.15s ease;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .mobile-tab:hover { background: none; border-color: transparent; }
+      .mobile-tab.active { color: var(--blue); }
+      .mobile-tab-icon { font-size: 18px; margin-bottom: 2px; }
+      .mobile-tab-dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: var(--green); margin-bottom: 2px;
+        display: none;
+      }
+      .mobile-tab-dot.visible { display: block; }
+
+      /* Mobile back button in chat */
+      .mobile-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--blue);
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        margin-right: 8px;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .mobile-back:hover { background: none; border-color: transparent; }
+
+      /* Modal improvements */
+      .modal-overlay { align-items: flex-end; }
+      .modal {
+        width: 100%;
+        max-width: 100vw;
+        max-height: 85vh;
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      }
+
+      /* Touch-friendly buttons */
+      .bot-card-actions .btn-xs { padding: 6px 12px; font-size: 12px; }
+      .bot-card-actions .btn-icon { padding: 6px 10px; }
+
+      .add-bot-card { padding: 16px; }
+    }
+
+    /* Desktop: hide mobile elements */
+    @media (min-width: 721px) {
+      .mobile-tabs { display: none !important; }
+      .mobile-back { display: none !important; }
+    }
+
+    /* Extra small screens */
+    @media (max-width: 380px) {
+      .header h1 { font-size: 13px; }
+      .header-stats { display: none; }
+      .bot-avatar { width: 30px; height: 30px; }
+    }
+
+    /* Standalone web app adjustments */
+    @media (display-mode: standalone) {
+      .app { padding-top: env(safe-area-inset-top); }
+    }
+
+    /* ---- Auth prompt ---- */
+    .auth-prompt {
+      margin-top: 10px;
+      padding: 10px;
+      background: var(--amber-dim);
+      border: 1px solid var(--amber-border);
+      border-radius: var(--radius);
+    }
+    .auth-prompt-title {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--amber);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .auth-prompt-code {
+      font-family: var(--mono);
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.15em;
+      padding: 6px 0;
+      user-select: all;
+      cursor: pointer;
+    }
+    .auth-prompt-link {
+      display: inline-block;
+      margin-top: 4px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--blue);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .auth-prompt-link:hover { text-decoration: underline; }
+    .auth-prompt-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Detail auth banner */
+    .auth-banner {
+      background: var(--bg-raised);
+      border: 1px solid var(--amber-border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .auth-banner-title {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--amber);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .auth-banner-code {
+      font-family: var(--mono);
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.2em;
+      padding: 8px 0;
+      user-select: all;
+      cursor: pointer;
+    }
+    .auth-banner-link {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 6px 16px;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--blue);
+      background: var(--blue-dim);
+      border: 1px solid var(--blue-border);
+      border-radius: var(--radius);
+      text-decoration: none;
+    }
+    .auth-banner-link:hover { background: #1a3d5e; text-decoration: none; }
+    .auth-banner-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>MC Presence <span id="appVersion" style="font-size:10px;color:var(--text-muted);font-weight:400;margin-left:6px;"></span></h1>
+    </div>
+    <div class="header-stats">
+      <span>Accounts: <span class="val" id="statTotal">0</span></span>
+      <span>Online: <span class="val" id="statOnline">0</span></span>
+      <span id="bridgeStatus" style="display:inline-flex;align-items:center;gap:5px;">
+        Bridge: <span class="val" id="bridgeStatusVal" style="display:inline-flex;align-items:center;gap:4px;">
+          <span id="bridgeDot" style="width:6px;height:6px;border-radius:50%;background:var(--text-muted);display:inline-block;"></span>
+          <span id="bridgeLabel">--</span>
+        </span>
+      </span>
+    </div>
+    <div class="header-right">
+      <button id="btnConnectAll" class="btn-green btn-sm">Connect All</button>
+      <button id="btnDisconnectAll" class="btn-red btn-sm">Disconnect All</button>
+      <button id="btnSettings" class="btn-sm" title="Settings">&#9881;</button>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="bots-column" id="botsColumn">
+      <div class="add-bot-card" id="btnAddBot">+ Add Account</div>
+    </div>
+    <div class="detail-column" id="detailColumn">
+      <div class="chat-panel" id="chatPanel">
+        <div class="empty-chat">Select an account to view chat</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile tab bar -->
+  <div class="mobile-tabs" id="mobileTabs">
+    <button class="mobile-tab active" id="tabAccounts" onclick="switchMobileTab('accounts')">
+      <span class="mobile-tab-icon">&#9638;</span>
+      Accounts
+    </button>
+    <button class="mobile-tab" id="tabChat" onclick="switchMobileTab('chat')">
+      <div class="mobile-tab-dot" id="tabChatDot"></div>
+      <span class="mobile-tab-icon">&#9993;</span>
+      Chat
+    </button>
+  </div>
+</div>
+<div class="modal-overlay" id="botModalOverlay">
+  <div class="modal">
+    <h2 id="botModalTitle">Add Account</h2>
+    <div class="field">
+      <label>Bot Type</label>
+      <select id="fBotType">
+        <option value="mineflayer">Minecraft Account (Mineflayer)</option>
+        <option value="bridge">Virtual Player (CobbleBridge)</option>
+      </select>
+      <div class="field-note" id="fBotTypeNote">Connects using a real Minecraft account.</div>
+    </div>
+    <div class="field">
+      <label>Label (display name)</label>
+      <input type="text" id="fLabel" placeholder="e.g. Main Account" />
+    </div>
+    <div id="mineflayerFields">
+      <div class="field">
+        <label>Microsoft Email</label>
+        <input type="text" id="fUsername" placeholder="email@outlook.com" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Server Host</label>
+          <input type="text" id="fHost" placeholder="your.server.com" />
+        </div>
+        <div class="field">
+          <label>Port</label>
+          <input type="text" id="fPort" value="25568" />
+        </div>
+      </div>
+      <div class="field">
+        <label>Auth Type</label>
+        <input type="text" id="fAuth" value="microsoft" />
+      </div>
+      <div class="field">
+        <label>Server Version</label>
+        <input type="text" id="fVersion" placeholder="auto-detect" />
+        <div class="field-note">Leave blank to auto-detect via server ping. Set manually (e.g. 1.21.4) to override.</div>
+      </div>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label>Mode</label>
+      <select id="fMode">
+        <option value="manual">Manual</option>
+        <option value="permanent">Permanent (always online)</option>
+        <option value="scheduled">Scheduled</option>
+      </select>
+      <div class="field-note" id="fModeNote"></div>
+    </div>
+
+    <div id="scheduleFields" style="display:none;">
+      <div class="field-row">
+        <div class="field">
+          <label>Connect At</label>
+          <input type="time" id="fSchedStart" value="00:00" />
+        </div>
+        <div class="field">
+          <label>Disconnect At</label>
+          <input type="time" id="fSchedEnd" value="08:00" />
+        </div>
+      </div>
+      <div class="field-note">Uses 24-hour time. Wraps midnight (e.g. 23:00 - 07:00 works).</div>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label>AI Chat Mode</label>
+      <select id="fAiMode">
+        <option value="off">Off</option>
+        <option value="admin-afk">Admin AFK (tells players Red is AFK, directs to CobbleBot)</option>
+        <option value="support">Support Bot (answers server questions, reads configs)</option>
+        <option value="disguise">Disguise as Player (casual chat, greetings)</option>
+      </select>
+      <div class="field-note" id="fAiModeNote"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btnBotCancel">Cancel</button>
+      <button id="btnBotSave" class="btn-green">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModalOverlay">
+  <div class="modal" style="width:600px;">
+    <h2>Settings</h2>
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">Maintenance Window</label>
+      <div class="field-note" style="margin-bottom:10px;">
+        During this window, disconnected bots will wait until the window ends before reconnecting.
+      </div>
+    </div>
+    <div class="checkbox-row" style="margin-bottom:12px;">
+      <input type="checkbox" id="sMaintenanceEnabled" />
+      <span>Enable maintenance window</span>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Window Start</label>
+        <input type="time" id="sMaintenanceStart" value="01:59" />
+      </div>
+      <div class="field">
+        <label>Window End</label>
+        <input type="time" id="sMaintenanceEnd" value="02:05" />
+      </div>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">Reconnect Settings</label>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Base Delay (sec)</label>
+        <input type="number" id="sReconnectBase" value="10" min="1" max="300" />
+      </div>
+      <div class="field">
+        <label>Max Delay (sec)</label>
+        <input type="number" id="sReconnectMax" value="120" min="10" max="600" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Max Retries</label>
+      <input type="number" id="sReconnectRetries" value="20" min="1" max="100" />
+      <div class="field-note">Uses exponential backoff. Resets on successful connection.</div>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">Default Server</label>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Host</label>
+        <input type="text" id="sDefaultHost" />
+      </div>
+      <div class="field">
+        <label>Port</label>
+        <input type="text" id="sDefaultPort" />
+      </div>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">AI Chat</label>
+    </div>
+    <div class="field">
+      <label>Anthropic API Key</label>
+      <input type="text" id="sAiApiKey" placeholder="sk-ant-..." />
+      <div class="field-note">Required for AI chat modes. Get one at console.anthropic.com</div>
+    </div>
+    <div class="field">
+      <label>Model</label>
+      <input type="text" id="sAiModel" value="claude-haiku-4-5-20251001" />
+      <div class="field-note">claude-haiku-4-5-20251001 recommended for speed + cost</div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Cooldown (seconds)</label>
+        <input type="number" id="sAiCooldown" value="15" min="1" max="300" />
+        <div class="field-note">Per-player cooldown between AI responses</div>
+      </div>
+      <div class="field">
+        <label>Response Delay (ms)</label>
+        <input type="number" id="sAiResponseDelay" value="2000" min="500" max="10000" step="500" />
+        <div class="field-note">Base delay before responding. Randomized up to 50% extra.</div>
+      </div>
+    </div>
+    <div class="checkbox-row" style="margin-bottom:12px;">
+      <input type="checkbox" id="sAiRespondPublic" />
+      <span>Admin AFK: respond to all public chat (not just mentions)</span>
+    </div>
+    <div class="field">
+      <label>Server Info (for Admin AFK mode)</label>
+      <textarea id="sAiServerInfo" style="width:100%;min-height:100px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--text-primary);outline:none;resize:vertical;" placeholder="Describe your server here — rules, features, commands, etc. This info is given to the AI in Admin AFK mode."></textarea>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">AI Prompts</label>
+      <div class="field-note" style="margin-bottom:10px;">Customize how the AI behaves in each mode. Use {botName} as a placeholder for the account's in-game name. Leave blank to use defaults.</div>
+    </div>
+    <div class="field">
+      <label>Admin AFK Prompt</label>
+      <textarea id="sAiAdminPrompt" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--text-primary);outline:none;resize:vertical;" placeholder="Leave blank for default."></textarea>
+    </div>
+    <div class="field">
+      <label>Support Bot Prompt</label>
+      <textarea id="sAiSupportPrompt" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--text-primary);outline:none;resize:vertical;" placeholder="Leave blank for default. The AI will also receive server info from above. This mode has access to tools (config reading, player lookup)."></textarea>
+    </div>
+    <div class="field">
+      <label>Disguise as Player Prompt</label>
+      <textarea id="sAiDisguisePrompt" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--text-primary);outline:none;resize:vertical;" placeholder="Leave blank for default."></textarea>
+    </div>
+
+    <hr class="modal-divider" />
+
+    <div class="field">
+      <label style="font-size:13px;text-transform:none;color:var(--text-primary);font-weight:600;margin-bottom:12px;">CobbleBridge Plugin</label>
+      <div class="field-note" style="margin-bottom:10px;">Configure the connection to the CobbleBridge Paper plugin for virtual player support and config reading.</div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Plugin URL</label>
+        <input type="text" id="sBridgeUrl" placeholder="http://localhost:3101" />
+      </div>
+      <div class="field">
+        <label>Shared Secret</label>
+        <input type="text" id="sBridgeSecret" placeholder="changeme" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Discord Webhook URL</label>
+      <input type="text" id="sBridgeDiscord" placeholder="https://discord.com/api/webhooks/..." />
+      <div class="field-note">CobbleBot messages will also be sent to this Discord channel.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btnSettingsCancel">Cancel</button>
+      <button id="btnSettingsSave" class="btn-green">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let botsMap = {};
+let selectedBotId = null;
+let editingBotId = null;
+let currentSettings = {};
+let uptimeTimers = {};
+
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
+function formatTime(ts) { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${h}h ${m}m ${sec}s`;
+}
+function showToast(msg, level) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast visible " + (level || "");
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = "toast", 3000);
+}
+
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => showToast("Code copied!")).catch(() => copyFallback(text));
+  } else {
+    copyFallback(text);
+  }
+}
+function copyFallback(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    showToast("Code copied!");
+  } catch (_) {
+    showToast("Copy failed — select and copy manually", "warn");
+  }
+  document.body.removeChild(ta);
+}
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+function updateStats(stats) {
+  $("statTotal").textContent = stats ? stats.total : Object.keys(botsMap).length;
+  $("statOnline").textContent = stats ? stats.online : Object.values(botsMap).filter(b => b.state === "connected").length;
+}
+
+// ---------------------------------------------------------------------------
+// Bot cards
+// ---------------------------------------------------------------------------
+function renderBotCards() {
+  const col = $("botsColumn");
+  col.querySelectorAll(".bot-card").forEach(el => el.remove());
+  const addBtn = $("btnAddBot");
+
+  for (const bot of Object.values(botsMap)) {
+    const card = document.createElement("div");
+    card.className = "bot-card" + (bot.id === selectedBotId ? " selected" : "");
+    card.dataset.id = bot.id;
+    card.onclick = (e) => { if (!e.target.closest("button")) selectBot(bot.id); };
+
+    const mcName = bot.connectedUsername || bot.label;
+    const isYielded = bot.yieldedDuplicate && bot.state === "disconnected";
+
+    let statusClass = bot.state;
+    let statusText = bot.state === "connected" ? "Online" : bot.state === "connecting" ? "Connecting" : "Offline";
+    if (isYielded) { statusClass = "yielded"; statusText = "Yielded"; }
+    if (bot.paused) { statusClass = "disconnected"; statusText = "Paused"; }
+
+    let schedLabel = "";
+    if (bot.mode === "scheduled" && bot.schedule) {
+      schedLabel = `<span class="schedule-label">${esc(bot.schedule.start)} – ${esc(bot.schedule.end)}</span>`;
+    }
+
+    let actions = "";
+    if (bot.paused) {
+      actions = `<button class="btn-green btn-xs" onclick="doTogglePause('${bot.id}')">Unpause</button>`;
+    } else if (isYielded) {
+      actions = `<button class="btn-blue btn-xs" onclick="doClearYield('${bot.id}')">Resume</button>`;
+    } else if (bot.state === "disconnected") {
+      actions = `<button class="btn-green btn-xs" onclick="doConnect('${bot.id}')">Connect</button>`;
+    } else if (bot.state === "connected") {
+      actions = `<button class="btn-red btn-xs" onclick="doDisconnect('${bot.id}')">Disconnect</button>`;
+    } else {
+      actions = `<button class="btn-xs" disabled>...</button>`;
+    }
+
+    // Pause button (when not already paused and not in edit-only state)
+    if (!bot.paused && (bot.state === "connected" || bot.mode !== "manual")) {
+      actions += ` <button class="btn-xs btn-icon" onclick="doTogglePause('${bot.id}')" title="Pause">&#9646;&#9646;</button>`;
+    }
+
+    if (bot.state === "disconnected" && !bot.paused) {
+      actions += ` <button class="btn-xs btn-icon" onclick="openEditModal('${bot.id}')" title="Edit">&#9998;</button>`;
+      actions += ` <button class="btn-xs btn-icon btn-red" onclick="doRemove('${bot.id}')" title="Remove">&times;</button>`;
+    }
+
+    // AI mode badge (clickable to cycle)
+    let aiBadge = "";
+    if (bot.state === "connected" || bot.state === "disconnected") {
+      if (bot.aiMode === "admin-afk") {
+        aiBadge = `<span class="mode-badge ai-admin-afk" style="cursor:pointer" onclick="doCycleAI('${bot.id}')" title="Click to cycle AI mode">AI: AFK</span>`;
+      } else if (bot.aiMode === "support") {
+        aiBadge = `<span class="mode-badge ai-support" style="cursor:pointer" onclick="doCycleAI('${bot.id}')" title="Click to cycle AI mode">AI: Support</span>`;
+      } else if (bot.aiMode === "disguise") {
+        aiBadge = `<span class="mode-badge ai-disguise" style="cursor:pointer" onclick="doCycleAI('${bot.id}')" title="Click to cycle AI mode">AI: Player</span>`;
+      } else {
+        aiBadge = `<span class="mode-badge manual" style="cursor:pointer" onclick="doCycleAI('${bot.id}')" title="Click to cycle AI mode">AI: Off</span>`;
+      }
+    }
+
+    card.innerHTML = `
+      <div class="bot-card-top">
+        <img class="bot-avatar" src="https://mc-heads.net/avatar/${esc(mcName)}/36" alt="" />
+        <div class="bot-info">
+          <div class="bot-label">${esc(bot.label)}</div>
+          <div class="bot-username">${bot.botType === "bridge" ? "Virtual Player (Bridge)" : esc(bot.username)}</div>
+        </div>
+      </div>
+      <div class="bot-meta-row">
+        <span class="mode-badge ${bot.mode}">${bot.mode}</span>
+        ${bot.botType === "bridge" ? '<span class="mode-badge bridge">Bridge</span>' : ""}
+        ${schedLabel}
+        ${bot.version ? `<span class="schedule-label">v${esc(bot.version)}</span>` : bot.detectedVersion ? `<span class="schedule-label">v${esc(bot.detectedVersion)} (auto)</span>` : ""}
+        ${aiBadge}
+        ${bot.paused ? `<span class="mode-badge paused">Paused</span>` : ""}
+      </div>
+      <div class="bot-status-row">
+        <div class="status-badge ${statusClass}"><span class="dot"></span>${statusText}</div>
+        <div class="bot-card-actions">${actions}</div>
+      </div>
+      ${bot.state === "connected" && bot.connectedAt ? `<div class="bot-uptime" id="uptime-${bot.id}"></div>` : ""}
+      ${bot.msaCode && bot.state === "connecting" ? `
+        <div class="auth-prompt">
+          <div class="auth-prompt-title">Microsoft Login Required</div>
+          <div class="auth-prompt-code" onclick="copyText('${esc(bot.msaCode.code)}')" title="Click to copy">${esc(bot.msaCode.code)}</div>
+          <a class="auth-prompt-link" href="${esc(bot.msaCode.uri)}" target="_blank">Open ${esc(bot.msaCode.uri)}</a>
+          <div class="auth-prompt-hint">Click code to copy, then enter it at the link above.</div>
+        </div>
+      ` : ""}
+    `;
+
+    col.insertBefore(card, addBtn);
+  }
+
+  updateStats();
+  updateUptimeTimers();
+}
+
+function updateUptimeTimers() {
+  for (const id of Object.keys(uptimeTimers)) {
+    if (!botsMap[id] || botsMap[id].state !== "connected") {
+      clearInterval(uptimeTimers[id]);
+      delete uptimeTimers[id];
+    }
+  }
+  for (const bot of Object.values(botsMap)) {
+    if (bot.state === "connected" && bot.connectedAt && !uptimeTimers[bot.id]) {
+      uptimeTimers[bot.id] = setInterval(() => {
+        const el = $("uptime-" + bot.id);
+        if (el && bot.connectedAt) el.textContent = "Uptime: " + formatUptime(Date.now() - bot.connectedAt);
+      }, 1000);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Detail panel
+// ---------------------------------------------------------------------------
+function selectBot(id) {
+  selectedBotId = id;
+  renderBotCards();
+  renderDetail();
+  // Auto-switch to chat tab on mobile
+  if (window.innerWidth <= 720) switchMobileTab("chat");
+}
+
+function renderDetail() {
+  const bot = botsMap[selectedBotId];
+  const panel = $("chatPanel");
+  const detail = $("detailColumn");
+
+  // Remove old players bar and auth banner
+  const oldPb = $("playersBar");
+  if (oldPb) oldPb.remove();
+  const oldAuth = $("authBanner");
+  if (oldAuth) oldAuth.remove();
+
+  if (!bot) {
+    panel.innerHTML = '<div class="empty-chat">Select an account to view chat</div>';
+    return;
+  }
+
+  // Auth banner (if awaiting Microsoft login)
+  if (bot.msaCode && bot.state === "connecting") {
+    const ab = document.createElement("div");
+    ab.id = "authBanner";
+    ab.className = "auth-banner";
+    ab.innerHTML = `
+      <div class="auth-banner-title">Microsoft Login Required</div>
+      <div class="auth-banner-code" onclick="copyText('${esc(bot.msaCode.code)}')" title="Click to copy">${esc(bot.msaCode.code)}</div>
+      <div><a class="auth-banner-link" href="${esc(bot.msaCode.uri)}" target="_blank">Open Microsoft Login</a></div>
+      <div class="auth-banner-hint">Click the code to copy it, then click the link to sign in.</div>
+    `;
+    detail.insertBefore(ab, panel);
+  }
+
+  panel.innerHTML = `
+    <div class="chat-panel-header">
+      <span><button class="mobile-back" onclick="switchMobileTab('accounts')">&#8592; Back</button>Chat <span class="chat-bot-name">/ ${esc(bot.label)}</span></span>
+    </div>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-input-row">
+      <input id="chatInput" type="text" placeholder="Type a message or /command..."
+        ${bot.state !== "connected" ? "disabled" : ""} />
+      <button id="btnSend" ${bot.state !== "connected" ? "disabled" : ""}>Send</button>
+    </div>
+  `;
+
+  const log = $("chatLog");
+  for (const entry of bot.chatLog || []) appendChatEntry(log, entry);
+  log.scrollTop = log.scrollHeight;
+
+  const inp = $("chatInput"), send = $("btnSend");
+  function doSend() {
+    const msg = inp.value.trim();
+    if (!msg || !selectedBotId) return;
+    socket.emit("send_chat", { botId: selectedBotId, message: msg });
+    inp.value = "";
+  }
+  send.onclick = doSend;
+  inp.onkeydown = (e) => { if (e.key === "Enter") doSend(); };
+
+  // Players bar
+  const pb = document.createElement("div");
+  pb.id = "playersBar";
+  pb.className = "players-bar";
+  detail.insertBefore(pb, panel);
+  renderPlayersBar(bot);
+}
+
+function appendChatEntry(container, entry) {
+  const div = document.createElement("div");
+  div.className = "chat-entry type-" + (entry.type || "chat");
+  let html = `<span class="ts">${formatTime(entry.ts)}</span>`;
+  if (["system","error","server","join","leave"].includes(entry.type)) {
+    html += esc(entry.message);
+  } else {
+    html += `<span class="sender">${esc(entry.sender)}</span> ${esc(entry.message)}`;
+  }
+  div.innerHTML = html;
+  container.appendChild(div);
+}
+
+function renderPlayersBar(bot) {
+  const pb = $("playersBar");
+  if (!pb) return;
+  const players = bot.players || [];
+  pb.innerHTML = `
+    <div class="players-bar-header">Players online <span class="count">${players.length}</span></div>
+    <div class="players-grid">
+      ${players.length === 0
+        ? '<span style="color:var(--text-muted);font-size:12px;">No players</span>'
+        : players.map(p => `<div class="player-chip"><img src="https://mc-heads.net/avatar/${esc(p.username)}/16" alt="" />${esc(p.username)}</div>`).join("")
+      }
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Bot modal
+// ---------------------------------------------------------------------------
+function openAddModal() {
+  editingBotId = null;
+  $("botModalTitle").textContent = "Add Account";
+  $("fBotType").value = "mineflayer";
+  $("fLabel").value = "";
+  $("fUsername").value = "";
+  $("fHost").value = currentSettings.defaultHost || "your.server.com";
+  $("fPort").value = currentSettings.defaultPort || "25568";
+  $("fAuth").value = "microsoft";
+  $("fVersion").value = "";
+  $("fMode").value = "manual";
+  $("fAiMode").value = "off";
+  $("fSchedStart").value = "00:00";
+  $("fSchedEnd").value = "08:00";
+  updateBotTypeUI();
+  updateModeUI();
+  updateAiModeUI();
+  $("botModalOverlay").classList.add("visible");
+}
+
+function openEditModal(id) {
+  const bot = botsMap[id];
+  if (!bot) return;
+  editingBotId = id;
+  $("botModalTitle").textContent = "Edit Account";
+  $("fBotType").value = bot.botType || "mineflayer";
+  $("fLabel").value = bot.label;
+  $("fUsername").value = bot.username || "";
+  $("fHost").value = bot.host;
+  $("fPort").value = bot.port;
+  $("fAuth").value = bot.auth;
+  $("fVersion").value = bot.version || "";
+  $("fMode").value = bot.mode;
+  $("fAiMode").value = bot.aiMode || "off";
+  $("fSchedStart").value = bot.schedule?.start || "00:00";
+  $("fSchedEnd").value = bot.schedule?.end || "08:00";
+  updateBotTypeUI();
+  updateModeUI();
+  updateAiModeUI();
+  $("botModalOverlay").classList.add("visible");
+}
+
+function closeBotModal() { $("botModalOverlay").classList.remove("visible"); editingBotId = null; }
+
+function saveBotModal() {
+  const botType = $("fBotType").value;
+  const cfg = {
+    label: $("fLabel").value.trim(),
+    botType,
+    mode: $("fMode").value,
+    aiMode: $("fAiMode").value,
+    schedule: { start: $("fSchedStart").value, end: $("fSchedEnd").value },
+  };
+
+  if (botType === "mineflayer") {
+    cfg.username = $("fUsername").value.trim();
+    cfg.host = $("fHost").value.trim() || "your.server.com";
+    cfg.port = $("fPort").value.trim() || "25568";
+    cfg.auth = $("fAuth").value.trim() || "microsoft";
+    cfg.version = $("fVersion").value.trim();
+    if (!cfg.username) { showToast("Email is required", "warn"); return; }
+    if (!cfg.label) cfg.label = cfg.username;
+  } else {
+    // Bridge bot — label is the virtual player name
+    if (!cfg.label) { showToast("Label is required (used as the virtual player name)", "warn"); return; }
+    cfg.username = "";
+    cfg.host = currentSettings.defaultHost || "";
+    cfg.port = currentSettings.defaultPort || 25568;
+    cfg.auth = "";
+    cfg.version = "";
+  }
+
+  if (editingBotId) {
+    socket.emit("update_bot", { id: editingBotId, ...cfg });
+  } else {
+    socket.emit("add_bot", cfg);
+  }
+  closeBotModal();
+}
+
+function updateBotTypeUI() {
+  const type = $("fBotType").value;
+  $("mineflayerFields").style.display = type === "mineflayer" ? "block" : "none";
+  const notes = {
+    mineflayer: "Connects using a real Minecraft account via Mineflayer.",
+    bridge: "Virtual player via CobbleBridge plugin. No MC account needed.",
+  };
+  $("fBotTypeNote").textContent = notes[type] || "";
+}
+
+function updateModeUI() {
+  const mode = $("fMode").value;
+  $("scheduleFields").style.display = mode === "scheduled" ? "block" : "none";
+  const notes = {
+    manual: "You control connect/disconnect manually.",
+    permanent: "Auto-connects and reconnects on any disconnect.",
+    scheduled: "Connects and disconnects at the times below.",
+  };
+  $("fModeNote").textContent = notes[mode] || "";
+}
+
+function updateAiModeUI() {
+  const mode = $("fAiMode").value;
+  const notes = {
+    off: "No AI responses.",
+    "admin-afk": "Tells players you're AFK and directs them to the support bot for questions.",
+    support: "AI support bot. Answers server questions, reads plugin configs, looks up player data.",
+    disguise: "AI acts as a casual player. Greets joiners, responds to questions with shorthand/lowercase.",
+  };
+  $("fAiModeNote").textContent = notes[mode] || "";
+}
+
+$("fBotType").onchange = updateBotTypeUI;
+$("fMode").onchange = updateModeUI;
+$("fAiMode").onchange = updateAiModeUI;
+$("btnAddBot").onclick = openAddModal;
+$("btnBotCancel").onclick = closeBotModal;
+$("btnBotSave").onclick = saveBotModal;
+$("botModalOverlay").onclick = (e) => { if (e.target === $("botModalOverlay")) closeBotModal(); };
+
+// ---------------------------------------------------------------------------
+// Settings modal
+// ---------------------------------------------------------------------------
+function openSettingsModal() {
+  const s = currentSettings;
+  $("sMaintenanceEnabled").checked = s.maintenance?.enabled ?? true;
+  $("sMaintenanceStart").value = s.maintenance?.start || "01:59";
+  $("sMaintenanceEnd").value = s.maintenance?.end || "02:05";
+  $("sReconnectBase").value = s.reconnect?.baseDelay ?? 10;
+  $("sReconnectMax").value = s.reconnect?.maxDelay ?? 120;
+  $("sReconnectRetries").value = s.reconnect?.maxRetries ?? 20;
+  $("sDefaultHost").value = s.defaultHost || "your.server.com";
+  $("sDefaultPort").value = s.defaultPort || "25568";
+  $("sAiApiKey").value = s.ai?.apiKey || "";
+  $("sAiModel").value = s.ai?.model || "claude-haiku-4-5-20251001";
+  $("sAiCooldown").value = s.ai?.cooldownSeconds ?? 15;
+  $("sAiResponseDelay").value = s.ai?.responseDelayMs ?? 2000;
+  $("sAiRespondPublic").checked = s.ai?.respondToPublicChat ?? false;
+  $("sAiServerInfo").value = s.ai?.serverInfo || "";
+  $("sAiAdminPrompt").value = s.ai?.adminAfkPrompt || "";
+  $("sAiSupportPrompt").value = s.ai?.supportPrompt || "";
+  $("sAiDisguisePrompt").value = s.ai?.disguisePrompt || "";
+  $("sBridgeUrl").value = s.bridge?.pluginUrl || "http://localhost:3101";
+  $("sBridgeSecret").value = s.bridge?.secret || "changeme";
+  $("sBridgeDiscord").value = s.bridge?.discordWebhook || "";
+  $("settingsModalOverlay").classList.add("visible");
+}
+
+function closeSettingsModal() { $("settingsModalOverlay").classList.remove("visible"); }
+
+function saveSettingsModal() {
+  socket.emit("update_settings", {
+    maintenance: {
+      enabled: $("sMaintenanceEnabled").checked,
+      start: $("sMaintenanceStart").value,
+      end: $("sMaintenanceEnd").value,
+    },
+    reconnect: {
+      baseDelay: parseInt($("sReconnectBase").value, 10) || 10,
+      maxDelay: parseInt($("sReconnectMax").value, 10) || 120,
+      maxRetries: parseInt($("sReconnectRetries").value, 10) || 20,
+    },
+    defaultHost: $("sDefaultHost").value.trim(),
+    defaultPort: $("sDefaultPort").value.trim(),
+    ai: {
+      apiKey: $("sAiApiKey").value.trim(),
+      model: $("sAiModel").value.trim() || "claude-haiku-4-5-20251001",
+      cooldownSeconds: parseInt($("sAiCooldown").value, 10) || 15,
+      responseDelayMs: parseInt($("sAiResponseDelay").value, 10) || 2000,
+      respondToPublicChat: $("sAiRespondPublic").checked,
+      serverInfo: $("sAiServerInfo").value,
+      adminAfkPrompt: $("sAiAdminPrompt").value,
+      supportPrompt: $("sAiSupportPrompt").value,
+      disguisePrompt: $("sAiDisguisePrompt").value,
+    },
+    bridge: {
+      pluginUrl: $("sBridgeUrl").value.trim() || "http://localhost:3101",
+      secret: $("sBridgeSecret").value.trim(),
+      discordWebhook: $("sBridgeDiscord").value.trim(),
+    },
+  });
+  closeSettingsModal();
+  showToast("Settings saved");
+}
+
+$("btnSettings").onclick = openSettingsModal;
+$("btnSettingsCancel").onclick = closeSettingsModal;
+$("btnSettingsSave").onclick = saveSettingsModal;
+$("settingsModalOverlay").onclick = (e) => { if (e.target === $("settingsModalOverlay")) closeSettingsModal(); };
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+function doConnect(id) { socket.emit("connect_bot", id); }
+function doDisconnect(id) { socket.emit("disconnect_bot", id); }
+function doClearYield(id) { socket.emit("clear_yield", id); }
+function doRemove(id) { if (confirm("Remove this account?")) socket.emit("remove_bot", id); }
+function doTogglePause(id) { socket.emit("toggle_pause", id); }
+function doCycleAI(id) { socket.emit("cycle_ai_mode", id); }
+
+$("btnConnectAll").onclick = () => socket.emit("connect_all");
+$("btnDisconnectAll").onclick = () => socket.emit("disconnect_all");
+
+// ---------------------------------------------------------------------------
+// Mobile tab navigation
+// ---------------------------------------------------------------------------
+let mobileTab = "accounts";
+
+function switchMobileTab(tab) {
+  mobileTab = tab;
+  const botsCol = $("botsColumn");
+  const detailCol = $("detailColumn");
+  const tabAccounts = $("tabAccounts");
+  const tabChat = $("tabChat");
+  const chatDot = $("tabChatDot");
+
+  if (!botsCol || !detailCol) return;
+
+  if (tab === "accounts") {
+    botsCol.classList.remove("mobile-hidden");
+    detailCol.classList.add("mobile-hidden");
+    if (tabAccounts) tabAccounts.classList.add("active");
+    if (tabChat) tabChat.classList.remove("active");
+  } else {
+    botsCol.classList.add("mobile-hidden");
+    detailCol.classList.remove("mobile-hidden");
+    if (tabAccounts) tabAccounts.classList.remove("active");
+    if (tabChat) tabChat.classList.add("active");
+    if (chatDot) chatDot.classList.remove("visible");
+  }
+}
+
+function showChatDot() {
+  if (mobileTab !== "chat" && window.innerWidth <= 720) {
+    const dot = $("tabChatDot");
+    if (dot) dot.classList.add("visible");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Socket events
+// ---------------------------------------------------------------------------
+socket.on("init", (data) => {
+  botsMap = {};
+  for (const b of data.bots) botsMap[b.id] = b;
+  currentSettings = data.settings || {};
+  if (data.version) $("appVersion").textContent = "v" + data.version;
+  renderBotCards();
+  if (selectedBotId && botsMap[selectedBotId]) renderDetail();
+});
+
+socket.on("botAdded", (bot) => { botsMap[bot.id] = bot; renderBotCards(); });
+socket.on("botUpdated", (bot) => {
+  botsMap[bot.id] = bot;
+  renderBotCards();
+  if (selectedBotId === bot.id) renderDetail();
+});
+socket.on("botRemoved", ({ botId }) => {
+  delete botsMap[botId];
+  if (selectedBotId === botId) { selectedBotId = null; renderDetail(); }
+  renderBotCards();
+});
+
+socket.on("botState", (data) => {
+  const bot = botsMap[data.botId];
+  if (!bot) return;
+  bot.state = data.state;
+  if (data.username) bot.connectedUsername = data.username;
+  if (data.state === "connected") { bot.connectedAt = Date.now(); bot.yieldedDuplicate = false; bot.msaCode = null; }
+  if (data.state === "disconnected") bot.connectedAt = null;
+  renderBotCards();
+  if (selectedBotId === data.botId) renderDetail();
+});
+
+socket.on("msaCode", (data) => {
+  const bot = botsMap[data.botId];
+  if (!bot) return;
+  bot.msaCode = { code: data.code, uri: data.uri };
+  renderBotCards();
+  if (selectedBotId === data.botId) renderDetail();
+});
+
+socket.on("chat", (data) => {
+  const bot = botsMap[data.botId];
+  if (!bot) return;
+  if (!bot.chatLog) bot.chatLog = [];
+  bot.chatLog.push(data);
+  if (bot.chatLog.length > 300) bot.chatLog.shift();
+
+  if (selectedBotId === data.botId) {
+    const log = $("chatLog");
+    if (log) {
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      appendChatEntry(log, data);
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+  }
+  showChatDot();
+});
+
+socket.on("players", (data) => {
+  const bot = botsMap[data.botId];
+  if (!bot) return;
+  bot.players = data.players;
+  if (selectedBotId === data.botId) renderPlayersBar(bot);
+});
+
+socket.on("stats", updateStats);
+socket.on("settingsUpdated", (s) => { currentSettings = s; });
+socket.on("toast", (data) => showToast(data.message, data.level));
+
+// Initialize mobile layout
+if (window.innerWidth <= 720) switchMobileTab("accounts");
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 720) {
+    $("botsColumn").classList.remove("mobile-hidden");
+    $("detailColumn").classList.remove("mobile-hidden");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bridge health check
+// ---------------------------------------------------------------------------
+let bridgeHealthy = null;
+
+async function checkBridgeHealth() {
+  const dot = $("bridgeDot");
+  const label = $("bridgeLabel");
+  try {
+    const res = await fetch("/api/bridge-health");
+    const data = await res.json();
+    if (data.status === "ok") {
+      dot.style.background = "var(--green)";
+      dot.style.boxShadow = "0 0 6px var(--green)";
+      label.textContent = `OK (${data.players}p, ${parseFloat(data.tps).toFixed(1)} TPS)`;
+      label.style.color = "var(--green)";
+      bridgeHealthy = true;
+    } else {
+      dot.style.background = "var(--red)";
+      dot.style.boxShadow = "none";
+      label.textContent = data.error || "Error";
+      label.style.color = "var(--red)";
+      bridgeHealthy = false;
+    }
+  } catch (err) {
+    dot.style.background = "var(--text-muted)";
+    dot.style.boxShadow = "none";
+    label.textContent = "No connection";
+    label.style.color = "var(--text-muted)";
+    bridgeHealthy = false;
+  }
+}
+
+checkBridgeHealth();
+setInterval(checkBridgeHealth, 30000);
+</script>
+</body>
+</html>
