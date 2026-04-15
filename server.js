@@ -617,13 +617,21 @@ function sendBotMessage(entry, message, opts = {}) {
     return false;
   }
 
+  // Resolve display name for webhooks: assistantName for AI, MC username otherwise
+  const webhookName = (entry.aiMode && entry.aiMode !== "off")
+    ? (entry.assistantName || "Assistant")
+    : (entry.bot?.username || entry.label);
+
   try {
     if (entry.botType === "bridge") {
       if (opts.whisperTo) bridgeSendWhisper(opts.whisperTo, clean);
-      else bridgeSendChat(clean);
+      else bridgeSendChat(clean, webhookName);
     } else if (entry.bot) {
       if (opts.whisperTo) entry.bot.chat(`/msg ${opts.whisperTo} ${clean}`);
-      else entry.bot.chat(clean);
+      else {
+        entry.bot.chat(clean);
+        sendDiscordWebhook(clean, webhookName);
+      }
     } else {
       return false;
     }
@@ -1846,9 +1854,9 @@ async function callBridgeAPI(method, endpoint, body) {
   }
 }
 
-async function bridgeSendChat(message) {
+async function bridgeSendChat(message, webhookName) {
   const result = callBridgeAPI("POST", "/api/chat", { message: sanitizeMcChat(message) });
-  sendDiscordWebhook(message);
+  sendDiscordWebhook(message, webhookName);
   return result;
 }
 
@@ -1861,7 +1869,7 @@ async function sendDiscordWebhook(message, username) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username: username || "MC Presence",
-        avatar_url: "https://mc-heads.net/avatar/MHF_Robot/128",
+        avatar_url: `https://mc-heads.net/avatar/${encodeURIComponent(username || "MHF_Robot")}/128`,
         content: message,
       }),
     });
