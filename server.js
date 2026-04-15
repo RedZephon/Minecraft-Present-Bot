@@ -4,10 +4,36 @@ const http = require("http");
 const { Server } = require("socket.io");
 const mineflayer = require("mineflayer");
 const mcping = require("minecraft-protocol").ping;
+const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
 const APP_VERSION = "2.0.0";
+
+// ---------------------------------------------------------------------------
+// SRV record resolution for Minecraft hostnames
+// ---------------------------------------------------------------------------
+async function resolveSRV(hostname, fallbackPort) {
+  // If it's already an IP address, skip SRV lookup
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+    return { host: hostname, port: fallbackPort };
+  }
+  try {
+    const records = await new Promise((resolve, reject) => {
+      dns.resolveSrv(`_minecraft._tcp.${hostname}`, (err, addrs) => {
+        if (err) reject(err);
+        else resolve(addrs);
+      });
+    });
+    if (records && records.length > 0) {
+      const srv = records[0];
+      return { host: srv.name, port: srv.port };
+    }
+  } catch (_) {
+    // No SRV record — fall through to using hostname directly
+  }
+  return { host: hostname, port: fallbackPort };
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -1204,16 +1230,30 @@ async function connectBot(id, isReconnect) {
     entry.bot = null;
   }
 
-  // Resolve effective host/port from settings (allows changing server without editing each session)
-  const effectiveHostEarly = settings.defaultHost || entry.host;
-  const effectivePortEarly = settings.defaultPort || entry.port;
+  // Resolve effective host/port from settings
+  const configHost = settings.defaultHost || entry.host;
+  const configPort = settings.defaultPort || entry.port;
 
   setBotState(entry, "connecting");
   pushChat(entry, {
     sender: "System",
-    message: `Connecting to ${effectiveHostEarly}:${effectivePortEarly}...`,
+    message: `Connecting to ${configHost}...`,
     type: "system",
   });
+
+  // Resolve SRV record (e.g. mc.example.com -> actual-ip:25568)
+  const resolved = await resolveSRV(configHost, configPort);
+  const effectiveHostEarly = resolved.host;
+  const effectivePortEarly = resolved.port;
+
+  if (effectiveHostEarly !== configHost || effectivePortEarly !== configPort) {
+    pushChat(entry, {
+      sender: "System",
+      message: `SRV resolved: ${effectiveHostEarly}:${effectivePortEarly}`,
+      type: "system",
+    });
+    console.log(`[MC-Presence] [${entry.label}] SRV: ${configHost} -> ${effectiveHostEarly}:${effectivePortEarly}`);
+  }
 
   // --- Version resolution ---
   let resolvedVersion = entry.version || null; // manual override
@@ -1267,11 +1307,9 @@ async function connectBot(id, isReconnect) {
   }
 
   // --- Build mineflayer options ---
-  // Always use the current default host/port from settings so that
-  // changing the server address in settings takes effect immediately
-  // without needing to edit every session individually.
-  const effectiveHost = settings.defaultHost || entry.host;
-  const effectivePort = settings.defaultPort || entry.port;
+  // Use the SRV-resolved host/port
+  const effectiveHost = effectiveHostEarly;
+  const effectivePort = effectivePortEarly;
   const opts = {
     host: effectiveHost,
     port: effectivePort,
