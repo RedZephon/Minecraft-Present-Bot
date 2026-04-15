@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -79,6 +79,7 @@ let settings = {
   },
   ownerUsername: process.env.OWNER_USERNAME || "",
   serverName: process.env.SERVER_NAME || "",
+  aiEnabled: true,
 };
 
 function loadSettings() {
@@ -968,6 +969,7 @@ async function executeAITool(name, input) {
 }
 
 async function handleAIChat(entry, playerName, message, isWhisper) {
+  if (!settings.aiEnabled) return;
   if (entry.aiMode === "off" || entry.state !== "connected") return;
   const botName = entry.bot?.username || entry.label;
   if (!entry.bot && entry.botType !== "bridge") return;
@@ -1096,6 +1098,7 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
 }
 
 async function handlePlayerJoinAI(entry, playerName) {
+  if (!settings.aiEnabled) return;
   if (entry.aiMode === "off" || !entry.bot || entry.state !== "connected") return;
   const botName = entry.bot.username;
 
@@ -1738,6 +1741,7 @@ io.on("connection", (socket) => {
     if (newSettings.bridge) settings.bridge = { ...settings.bridge, ...newSettings.bridge };
     if (newSettings.ownerUsername !== undefined) settings.ownerUsername = newSettings.ownerUsername;
     if (newSettings.serverName !== undefined) settings.serverName = newSettings.serverName;
+    if (newSettings.aiEnabled !== undefined) settings.aiEnabled = newSettings.aiEnabled;
     saveSettings();
     io.emit("settingsUpdated", settings);
   });
@@ -2054,6 +2058,7 @@ async function refreshBridgePlayers(entry) {
 }
 
 async function handleBridgePlayerJoin(entry, playerName, firstTime) {
+  if (!settings.aiEnabled) return;
   // Bulletproof self/bot check
   if (isAnyBotAccount(playerName)) return;
 

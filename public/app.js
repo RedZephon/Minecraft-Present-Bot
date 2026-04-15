@@ -269,7 +269,7 @@ function renderSidebar() {
     if (isActive && bot.state === 'connected') meta += ' \u00B7 speaking';
 
     let badge = '';
-    if (bot.aiMode && bot.aiMode !== 'off') {
+    if (state.settings.aiEnabled !== false && bot.aiMode && bot.aiMode !== 'off') {
       badge = '<span class="badge ai">AI</span>';
     }
 
@@ -644,7 +644,7 @@ function renderDetails() {
         </div>
         <div class="toggle ${bot.antiAfk ? 'on' : ''}" data-field="antiAfk" onclick="toggleBehavior('${bot.id}', 'antiAfk', this)"></div>
       </div>
-      <div style="padding-top:12px;border-top:1px solid var(--border);">
+      ${state.settings.aiEnabled !== false ? `<div style="padding-top:12px;border-top:1px solid var(--border);">
         <label style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;display:block;">AI Mode</label>
         <div class="ai-mode-selector" style="display:flex;flex-direction:column;gap:4px;">
           <label class="ai-mode-option" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius-sm);cursor:pointer;transition:background 0.15s;${bot.aiMode === 'off' ? 'background:var(--bg-elev-2);' : ''}" onclick="setAiMode('${bot.id}', 'off')">
@@ -683,7 +683,7 @@ function renderDetails() {
         <input class="assistant-name-input" type="text" value="${esc(bot.assistantName || 'Assistant')}"
           onchange="updateAssistantName('${bot.id}', this.value)" placeholder="Assistant" />
       </div>
-      ` : ''}
+      ` : ''}` : ''}
     </div>
 
     <div class="details-section">
@@ -1031,8 +1031,35 @@ $('sessionModalOverlay').addEventListener('click', (e) => {
 });
 
 // ─────────── Settings Modal ───────────
+function updateAiSettingsVisibility() {
+  const enabled = state.settings.aiEnabled !== false;
+  // Settings tabs
+  document.querySelectorAll('.settings-tab[data-tab="ai"], .settings-tab[data-tab="prompts"]').forEach(el => {
+    el.style.display = enabled ? '' : 'none';
+  });
+  // If currently on a hidden tab, switch to general
+  if (!enabled) {
+    const activeTab = document.querySelector('.settings-tab.active');
+    if (activeTab && (activeTab.dataset.tab === 'ai' || activeTab.dataset.tab === 'prompts')) {
+      activeTab.classList.remove('active');
+      document.querySelector('.settings-tab[data-tab="general"]').classList.add('active');
+      document.querySelectorAll('.settings-pane').forEach(p => p.classList.remove('active'));
+      document.querySelector('.settings-pane[data-pane="general"]').classList.add('active');
+    }
+  }
+}
+
 function openSettingsModal() {
   const s = state.settings;
+  // AI toggle
+  const aiToggle = $('sAiEnabledToggle');
+  aiToggle.classList.toggle('on', s.aiEnabled !== false);
+  aiToggle.onclick = () => {
+    aiToggle.classList.toggle('on');
+    state.settings.aiEnabled = aiToggle.classList.contains('on');
+    updateAiSettingsVisibility();
+  };
+  updateAiSettingsVisibility();
   $('sMaintenanceEnabled').checked = s.maintenance?.enabled ?? true;
   $('sMaintenanceStart').value = s.maintenance?.start || '01:59';
   $('sMaintenanceEnd').value = s.maintenance?.end || '02:05';
@@ -1073,6 +1100,7 @@ function saveSettingsModal() {
       maxDelay: parseInt($('sReconnectMax').value, 10) || 120,
       maxRetries: parseInt($('sReconnectRetries').value, 10) || 20,
     },
+    aiEnabled: $('sAiEnabledToggle').classList.contains('on'),
     serverName: $('sServerName').value.trim(),
     defaultHost: $('sDefaultHost').value.trim(),
     defaultPort: $('sDefaultPort').value.trim(),
