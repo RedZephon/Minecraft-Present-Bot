@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create release zip
+        run: |
+          zip -r mc-presence-${{ steps.version.outputs.VERSION }}.zip \
+            server.js \
+            package.json \
+            package-lock.json \
+            .env.example \
+            CHANGELOG.md \
+            README.md \
+            Dockerfile \
+            .dockerignore \
+            public/ \
+            -x "public/node_modules/*"
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          VERSION_NUM="${VERSION#v}"
+          BODY=$(awk "/^## v${VERSION_NUM}/{found=1; next} /^## v/{if(found) exit} found" CHANGELOG.md)
+          echo "BODY<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MC Presence ${{ steps.version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.BODY }}
+          files: mc-presence-${{ steps.version.outputs.VERSION }}.zip
+          draft: false
+          prerelease: false
