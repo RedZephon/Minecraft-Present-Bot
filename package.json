@@ -1,11 +1,12 @@
 {
-  "name": "mc-presence-bot",
+  "name": "mc-presence",
   "version": "2.0.0",
-  "description": "Multi-account headless Minecraft presence bot with scheduling",
+  "description": "Multi-account headless Minecraft presence bot with AI chat and real-time web dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "license": "MIT",
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.21.0",

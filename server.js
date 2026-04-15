@@ -7,7 +7,7 @@ const mcping = require("minecraft-protocol").ping;
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "2.0.0";
 
 const app = express();
 const server = http.createServer(app);
@@ -52,6 +52,7 @@ let settings = {
     discordWebhook: process.env.DISCORD_WEBHOOK || "",
   },
   ownerUsername: process.env.OWNER_USERNAME || "",
+  serverName: process.env.SERVER_NAME || "",
 };
 
 function loadSettings() {
@@ -76,6 +77,39 @@ function saveSettings() {
 // ---------------------------------------------------------------------------
 const bots = new Map();
 const MAX_LOG = 300;
+
+// ---------------------------------------------------------------------------
+// Active session state
+// ---------------------------------------------------------------------------
+let activeSessionId = null;
+let serverFavicon = null; // base64 PNG from server ping
+
+function getActiveSession() {
+  if (!activeSessionId) return null;
+  const entry = bots.get(activeSessionId);
+  return entry && entry.state === "connected" ? entry : null;
+}
+
+function setActiveSession(id) {
+  const entry = bots.get(id);
+  if (!entry || entry.state !== "connected") return false;
+  activeSessionId = id;
+  io.emit("active-session:changed", { id: activeSessionId });
+  return true;
+}
+
+function fallbackActiveSession() {
+  // Pick next connected bot, or null
+  for (const [id, entry] of bots) {
+    if (entry.state === "connected") {
+      activeSessionId = id;
+      io.emit("active-session:changed", { id: activeSessionId });
+      return;
+    }
+  }
+  activeSessionId = null;
+  io.emit("active-session:changed", { id: null });
+}
 
 /*
   Bot entry shape:
@@ -105,6 +139,10 @@ function saveBotConfigs() {
       aiMode: b.aiMode,
       botType: b.botType,
       paused: b.paused,
+      autoReconnect: b.autoReconnect,
+      antiAfk: b.antiAfk,
+      aiAssistant: b.aiAssistant,
+      assistantName: b.assistantName,
     });
   }
   fs.writeFileSync(BOTS_PATH, JSON.stringify(configs, null, 2));
@@ -187,6 +225,14 @@ function setBotState(entry, state, extra) {
   entry.state = state;
   io.emit("botState", { botId: entry.id, state, ...extra });
   emitGlobalStats();
+
+  // Active session management
+  if (state === "connected" && !activeSessionId) {
+    activeSessionId = entry.id;
+    io.emit("active-session:changed", { id: activeSessionId });
+  } else if (state === "disconnected" && activeSessionId === entry.id) {
+    fallbackActiveSession();
+  }
 }
 
 function emitGlobalStats() {
@@ -302,6 +348,10 @@ function serializeBot(entry) {
     reconnectAttempts: entry.reconnectAttempts,
     yieldedDuplicate: entry.yieldedDuplicate,
     msaCode: entry.msaCode,
+    autoReconnect: entry.autoReconnect,
+    antiAfk: entry.antiAfk,
+    aiAssistant: entry.aiAssistant,
+    assistantName: entry.assistantName,
   };
 }
 
@@ -758,15 +808,16 @@ rules:
 
 function buildSystemPrompt(entry) {
   const botName = entry.bot?.username || entry.label;
+  const assistantName = entry.assistantName || "Assistant";
 
   if (entry.aiMode === "admin-afk") {
     const template = settings.ai.adminAfkPrompt || DEFAULT_ADMIN_AFK_PROMPT;
-    return template.replace(/\{botName\}/g, botName);
+    return template.replace(/\{botName\}/g, botName).replace(/\{assistantName\}/g, assistantName);
   }
 
   if (entry.aiMode === "support") {
     const template = settings.ai.supportPrompt || DEFAULT_SUPPORT_PROMPT;
-    let prompt = template.replace(/\{botName\}/g, botName);
+    let prompt = template.replace(/\{botName\}/g, botName).replace(/\{assistantName\}/g, assistantName);
     if (settings.ai.serverInfo) {
       prompt += `\n\nServer information:\n${settings.ai.serverInfo}`;
     }
@@ -775,7 +826,7 @@ function buildSystemPrompt(entry) {
 
   if (entry.aiMode === "disguise") {
     const template = settings.ai.disguisePrompt || DEFAULT_DISGUISE_PROMPT;
-    return template.replace(/\{botName\}/g, botName);
+    return template.replace(/\{botName\}/g, botName).replace(/\{assistantName\}/g, assistantName);
   }
 
   return "";
@@ -904,7 +955,7 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
   if (entry.aiMode === "admin-afk") {
     if (!isWhisper) {
       const lower = message.toLowerCase();
-      const mentionsBot = lower.includes(botName.toLowerCase()) || lower.includes("red") || lower.includes("zeph");
+      const mentionsBot = lower.includes(botName.toLowerCase());
       if (!mentionsBot) return;
     }
   }
@@ -1113,6 +1164,10 @@ function registerBot(cfg) {
     aiMode: cfg.aiMode || "off",  // off | admin-afk | support | disguise
     botType: cfg.botType || "mineflayer", // mineflayer | bridge
     paused: cfg.paused || false,
+    autoReconnect: cfg.autoReconnect !== undefined ? cfg.autoReconnect : (cfg.autoConnect !== undefined ? cfg.autoConnect : true),
+    antiAfk: cfg.antiAfk !== undefined ? cfg.antiAfk : true,
+    aiAssistant: cfg.aiAssistant !== undefined ? cfg.aiAssistant : false,
+    assistantName: cfg.assistantName || "Assistant",
     schedule: cfg.schedule || { start: "00:00", end: "08:00" },
     state: "disconnected",
     bot: null,
@@ -1164,6 +1219,12 @@ async function connectBot(id, isReconnect) {
     try {
       pushChat(entry, { sender: "System", message: "Pinging server to detect version...", type: "system" });
       const pingResult = await mcping({ host: entry.host, port: entry.port, closeTimeout: 8000 });
+
+      // Capture server favicon
+      if (pingResult && pingResult.favicon && !serverFavicon) {
+        serverFavicon = pingResult.favicon; // "data:image/png;base64,..."
+        io.emit("serverFavicon", serverFavicon);
+      }
 
       if (pingResult && pingResult.version && pingResult.version.name) {
         // Version name might be something like "1.21.4" or "Paper 1.21.4"
@@ -1291,13 +1352,24 @@ async function connectBot(id, isReconnect) {
 
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
+
+    // Use the tab list as the source of truth for real players.
+    // Plugin broadcasts (Lands, Skills, etc.) appear as chat from usernames
+    // that aren't actually in the player tab list. This check is universal
+    // regardless of server chat format.
+    const isOnlinePlayer = bot.players && bot.players[username];
+    if (!isOnlinePlayer) {
+      pushChat(entry, { sender: "Server", message: `${username}: ${message}`, type: "system" });
+      return;
+    }
+
     pushChat(entry, { sender: username, message, type: "chat" });
     // Check wb watchers — real non-bot players saying "wb"
-    if (isRealPlayer(username) && !isAnyBotAccount(username) && /^\s*wb\s*[!.]?\s*$/i.test(message)) {
+    if (!isAnyBotAccount(username) && /^\s*wb\s*[!.]?\s*$/i.test(message)) {
       checkWbWatchers(username);
     }
     // Only trigger AI for real players, skip achievements/advancements
-    if (isRealPlayer(username) && bot.players && bot.players[username]) {
+    if (isRealPlayer(username) && !isAnyBotAccount(username)) {
       if (/has made the advancement|has completed the challenge|has reached the goal/i.test(message)) return;
       handleAIChat(entry, username, message, false);
     }
@@ -1317,7 +1389,9 @@ async function connectBot(id, isReconnect) {
     if (text.includes("§") || text.includes("\u00A7")) return;
 
     // Detect first-time join messages from server
-    const firstTimeMatch = text.match(/^(\w+) (?:joined|has joined).*(?:for the first time|first time)/i);
+    // Handles formats like: "wittywolf joined for the first time",
+    // "[+] wittywolf joined the server for the first time", etc.
+    const firstTimeMatch = text.match(/(?:^\[?\+?\]?\s*)?(\w+)\s+(?:joined|has joined|logged in).*(?:for the first time|first time)/i);
     if (firstTimeMatch) {
       const name = firstTimeMatch[1];
       if (isRealPlayer(name)) {
@@ -1328,9 +1402,19 @@ async function connectBot(id, isReconnect) {
       }
     }
 
-    const isJoinLeave = /joined|left|logged|lost connection/i.test(text);
+    // Classify join/leave/death messages with specific types for icon rendering
+    const isJoin = /^\[\+\]|logged in via|joined.*for the first time/i.test(text);
+    const isLeave = /^\[-\]|left the server|lost connection|logged out/i.test(text);
     const isDeath = /was slain|was shot|drowned|burned|fell|blew up|was killed|hit the ground|withered|was squashed/i.test(text);
-    if (isJoinLeave || isDeath) {
+
+    if (isJoin) {
+      pushChat(entry, { sender: "Server", message: text, type: "join" });
+    } else if (isLeave) {
+      pushChat(entry, { sender: "Server", message: text, type: "leave" });
+    } else if (isDeath) {
+      pushChat(entry, { sender: "Server", message: text, type: "server" });
+    } else if (/joined|left|logged/i.test(text)) {
+      // Catch any other join/leave patterns as generic server messages
       pushChat(entry, { sender: "Server", message: text, type: "server" });
     }
   });
@@ -1339,7 +1423,8 @@ async function connectBot(id, isReconnect) {
     if (!hasSpawned) return; // Skip tab list population during login
     if (!isRealPlayer(player.username)) return;
     if (bot.username && player.username === bot.username) return;
-    pushChat(entry, { sender: "Server", message: `${player.username} joined`, type: "join" });
+    // Don't push chat here — the server broadcast via bot.on("message") already
+    // emits the formatted join message (e.g. "RedZephon logged in via JAVA").
     io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
     if (!isAnyBotAccount(player.username)) {
       handlePlayerJoinAI(entry, player.username);
@@ -1349,7 +1434,7 @@ async function connectBot(id, isReconnect) {
   bot.on("playerLeft", (player) => {
     if (!hasSpawned) return;
     if (!isRealPlayer(player.username)) return;
-    pushChat(entry, { sender: "Server", message: `${player.username} left`, type: "leave" });
+    // Don't push chat here — the server broadcast handles the leave message.
     io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
   });
 
@@ -1496,7 +1581,15 @@ setInterval(() => {
 io.on("connection", (socket) => {
   const payload = [];
   for (const [, entry] of bots) payload.push(serializeBot(entry));
-  socket.emit("init", { bots: payload, settings, version: APP_VERSION });
+  socket.emit("init", {
+    bots: payload, settings, version: APP_VERSION, activeSessionId,
+    serverFavicon,
+    defaultPrompts: {
+      adminAfk: DEFAULT_ADMIN_AFK_PROMPT,
+      support: DEFAULT_SUPPORT_PROMPT,
+      disguise: DEFAULT_DISGUISE_PROMPT,
+    },
+  });
 
   // --- Bot management ---
   socket.on("add_bot", (cfg) => {
@@ -1563,7 +1656,8 @@ io.on("connection", (socket) => {
 
   // --- Chat ---
   socket.on("send_chat", ({ botId, message }) => {
-    const entry = bots.get(botId);
+    const resolvedId = botId || activeSessionId;
+    const entry = bots.get(resolvedId);
     if (!entry || entry.state !== "connected") return;
     if (typeof message === "string" && message.trim()) {
       const msg = message.trim();
@@ -1596,6 +1690,7 @@ io.on("connection", (socket) => {
     if (newSettings.ai) settings.ai = { ...settings.ai, ...newSettings.ai };
     if (newSettings.bridge) settings.bridge = { ...settings.bridge, ...newSettings.bridge };
     if (newSettings.ownerUsername !== undefined) settings.ownerUsername = newSettings.ownerUsername;
+    if (newSettings.serverName !== undefined) settings.serverName = newSettings.serverName;
     saveSettings();
     io.emit("settingsUpdated", settings);
   });
@@ -1639,6 +1734,44 @@ io.on("connection", (socket) => {
     pushChat(entry, { sender: "System", message: `AI mode: ${entry.aiMode}`, type: "system" });
     io.emit("botUpdated", serializeBot(entry));
   });
+
+  // --- Active session ---
+  socket.on("active-session:set", ({ id }) => {
+    if (setActiveSession(id)) {
+      console.log(`[MC-Presence] Active session set to: ${id}`);
+    }
+  });
+
+  // --- Behavior toggles ---
+  socket.on("session:behavior:update", ({ id, field, value }) => {
+    const entry = bots.get(id);
+    if (!entry) return;
+    const allowed = ["autoReconnect", "antiAfk", "aiMode", "assistantName"];
+    if (!allowed.includes(field)) return;
+    if (field === "aiMode") {
+      const validModes = ["off", "admin-afk", "support", "disguise"];
+      if (!validModes.includes(value)) return;
+    }
+    entry[field] = value;
+    saveBotConfigs();
+    io.emit("botUpdated", serializeBot(entry));
+  });
+
+  // --- Session restart ---
+  socket.on("session:restart", (id) => {
+    const entry = bots.get(id);
+    if (!entry) return;
+    if (entry.botType === "bridge") {
+      disconnectBridgeBot(id);
+      setTimeout(() => connectBridgeBot(id), 1000);
+    } else {
+      disconnectBot(id, true);
+      setTimeout(() => connectBot(id, false), 1000);
+    }
+  });
+
+  // --- Session remove (alias for remove_bot) ---
+  socket.on("session:remove", (id) => removeBot(id));
 });
 
 // ---------------------------------------------------------------------------
@@ -1676,7 +1809,7 @@ async function sendDiscordWebhook(message, username) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        username: username || "CobbleBot",
+        username: username || "MC Presence",
         avatar_url: "https://mc-heads.net/avatar/MHF_Robot/128",
         content: message,
       }),
@@ -1835,7 +1968,7 @@ app.post("/api/plugin-event", (req, res) => {
   }
 
   if (!bridgeFound && event.type === "player_join") {
-    console.log(`[MC-Presence] WARNING: No connected bridge bot to handle join event. Check CobbleBot is connected and botType=bridge.`);
+    console.log(`[MC-Presence] WARNING: No connected bridge bot to handle join event. Check your bridge bot is connected and botType=bridge.`);
   }
 
   res.json({ ok: true });
@@ -1907,6 +2040,38 @@ async function handleBridgePlayerJoin(entry, playerName, firstTime) {
     console.log(`[MC-Presence] [${entry.label}] Bridge greeting -> ${playerName}: ${msg}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Latency polling — every 5 seconds
+// ---------------------------------------------------------------------------
+setInterval(() => {
+  for (const [, entry] of bots) {
+    if (entry.state !== "connected") continue;
+    let latency = 0;
+    if (entry.botType === "mineflayer" && entry.bot) {
+      latency = entry.bot.player?.ping || entry.bot._client?.latency || 0;
+    }
+    const uptime = entry.connectedAt ? Date.now() - entry.connectedAt : 0;
+    io.emit("session:metrics", { id: entry.id, latency, uptime });
+  }
+}, 5000);
+
+// ---------------------------------------------------------------------------
+// Anti-AFK loop — every 45 seconds
+// ---------------------------------------------------------------------------
+setInterval(() => {
+  for (const [, entry] of bots) {
+    if (entry.state !== "connected") continue;
+    if (!entry.antiAfk) continue;
+    if (entry.botType !== "mineflayer" || !entry.bot) continue;
+    try {
+      // Small random look movement
+      const yaw = (entry.bot.entity?.yaw || 0) + (Math.random() - 0.5) * 0.5;
+      const pitch = entry.bot.entity?.pitch || 0;
+      entry.bot.look(yaw, pitch, false);
+    } catch (_) {}
+  }
+}, 45000);
 
 // ---------------------------------------------------------------------------
 // REST API
