@@ -27,6 +27,7 @@
   <!-- ───────── TOP NAV ───────── -->
   <nav class="topnav">
     <div class="topnav-left">
+      <button class="icon-btn mobile-sidebar-btn" id="btnMobileSidebar" title="Sessions"><i class="fa-solid fa-bars"></i></button>
       <div class="logo">
         <div class="logo-mark"><i class="fa-solid fa-signal"></i></div>
         MC Presence
@@ -42,6 +43,7 @@
         <button data-theme-btn="light"><i class="fa-solid fa-sun"></i></button>
         <button data-theme-btn="dark"><i class="fa-solid fa-moon"></i></button>
       </div>
+      <button class="icon-btn mobile-details-btn" id="btnMobileDetails" title="Details"><i class="fa-solid fa-circle-info"></i></button>
       <button class="icon-btn" id="btnSettings" title="Settings"><i class="fa-solid fa-gear"></i></button>
       <span class="version-badge" id="appVersion"></span>
     </div>
@@ -385,6 +387,10 @@
     <div class="command-list" id="cmdPaletteList"></div>
   </div>
 </div>
+
+<!-- ───────── MOBILE OVERLAYS ───────── -->
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<div class="details-overlay" id="detailsOverlay"></div>
 
 <!-- ───────── TOAST ───────── -->
 <div id="toast" class="toast"></div>

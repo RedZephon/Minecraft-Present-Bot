@@ -1204,10 +1204,14 @@ async function connectBot(id, isReconnect) {
     entry.bot = null;
   }
 
+  // Resolve effective host/port from settings (allows changing server without editing each session)
+  const effectiveHostEarly = settings.defaultHost || entry.host;
+  const effectivePortEarly = settings.defaultPort || entry.port;
+
   setBotState(entry, "connecting");
   pushChat(entry, {
     sender: "System",
-    message: `Connecting to ${entry.host}:${entry.port}...`,
+    message: `Connecting to ${effectiveHostEarly}:${effectivePortEarly}...`,
     type: "system",
   });
 
@@ -1218,7 +1222,7 @@ async function connectBot(id, isReconnect) {
     // Ping server to detect version
     try {
       pushChat(entry, { sender: "System", message: "Pinging server to detect version...", type: "system" });
-      const pingResult = await mcping({ host: entry.host, port: entry.port, closeTimeout: 8000 });
+      const pingResult = await mcping({ host: effectiveHostEarly, port: effectivePortEarly, closeTimeout: 8000 });
 
       // Capture server favicon
       if (pingResult && pingResult.favicon && !serverFavicon) {
@@ -1263,9 +1267,14 @@ async function connectBot(id, isReconnect) {
   }
 
   // --- Build mineflayer options ---
+  // Always use the current default host/port from settings so that
+  // changing the server address in settings takes effect immediately
+  // without needing to edit every session individually.
+  const effectiveHost = settings.defaultHost || entry.host;
+  const effectivePort = settings.defaultPort || entry.port;
   const opts = {
-    host: entry.host,
-    port: entry.port,
+    host: effectiveHost,
+    port: effectivePort,
     username: entry.username,
     auth: entry.auth,
     profilesFolder: path.join(__dirname, ".minecraft"),
@@ -1290,7 +1299,7 @@ async function connectBot(id, isReconnect) {
   }
 
   console.log(`[MC-Presence] [${entry.label}] Connecting as ${opts.username}${resolvedVersion ? " (v" + resolvedVersion + ")" : ""}`);
-  console.log(`[MC-Presence] [${entry.label}] Host: ${opts.host}:${opts.port}, Auth: ${opts.auth}`);
+  console.log(`[MC-Presence] [${entry.label}] Host: ${effectiveHost}:${effectivePort}, Auth: ${opts.auth}`);
 
   try {
     entry.bot = mineflayer.createBot(opts);
@@ -1907,48 +1916,64 @@ app.post("/api/plugin-event", (req, res) => {
 
   console.log(`[MC-Presence] Bridge event: ${event.type} - ${event.player || ""} | payload: ${JSON.stringify(event).slice(0, 200)}`);
 
-  // Find the bridge bot (if any) to route events to
-  let bridgeFound = false;
+  // Route CobbleBridge events to ALL connected bots (not just bridge type).
+  // This lets mineflayer bots benefit from reliable join/leave/chat events
+  // when CobbleBridge is configured.
+  let anyConnected = false;
   for (const [, entry] of bots) {
-    if (entry.botType !== "bridge") continue;
-    if (entry.state !== "connected") {
-      console.log(`[MC-Presence] Bridge bot "${entry.label}" exists but state=${entry.state}`);
-      continue;
-    }
-    bridgeFound = true;
+    if (entry.state !== "connected") continue;
+    anyConnected = true;
 
     switch (event.type) {
       case "player_join": {
         if (!isRealPlayer(event.player)) break;
         if (isAnyBotAccount(event.player)) break;
-        console.log(`[MC-Presence] Bridge join: ${event.player} firstTime=${event.firstTime} playerCount=${event.playerCount}`);
-        pushChat(entry, { sender: "Server", message: `${event.player} joined${event.firstTime ? " (first time!)" : ""}`, type: "join" });
-        io.emit("players", { botId: entry.id, players: entry.bridgePlayers || [] });
-        refreshBridgePlayers(entry);
-
+        // Only push chat for bridge bots — mineflayer bots get join messages from bot.on("message")
+        if (entry.botType === "bridge") {
+          pushChat(entry, { sender: "Server", message: `${event.player} joined${event.firstTime ? " (first time!)" : ""}`, type: "join" });
+          io.emit("players", { botId: entry.id, players: entry.bridgePlayers || [] });
+          refreshBridgePlayers(entry);
+        } else {
+          // For mineflayer bots, just refresh the player list to catch any missed tab list updates
+          io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
+        }
+        // First-time detection via bridge is reliable — use for all bots
+        if (event.firstTime === true) {
+          confirmedFirstTimers.add(event.player);
+          setTimeout(() => confirmedFirstTimers.delete(event.player), 30000);
+        }
         if (entry.aiMode !== "off") {
           const firstTime = event.firstTime === true;
-          handleBridgePlayerJoin(entry, event.player, firstTime);
+          if (entry.botType === "bridge") {
+            handleBridgePlayerJoin(entry, event.player, firstTime);
+          }
+          // Mineflayer bots handle greetings via bot.on("playerJoined") already
         }
         break;
       }
       case "player_quit": {
         if (!isRealPlayer(event.player)) break;
-        pushChat(entry, { sender: "Server", message: `${event.player} left`, type: "leave" });
-        refreshBridgePlayers(entry);
+        if (entry.botType === "bridge") {
+          pushChat(entry, { sender: "Server", message: `${event.player} left`, type: "leave" });
+          refreshBridgePlayers(entry);
+        } else {
+          // For mineflayer bots, refresh player list to catch stale entries
+          io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
+        }
         break;
       }
       case "player_chat": {
         if (!isRealPlayer(event.player)) break;
-        pushChat(entry, { sender: event.player, message: event.message, type: "chat" });
+        // Only push chat for bridge bots — mineflayer bots get chat from bot.on("chat")
+        if (entry.botType === "bridge") {
+          pushChat(entry, { sender: event.player, message: event.message, type: "chat" });
+        }
 
-        // Check wb watchers — real non-bot players saying "wb"
+        // wb watchers and AI work for all bot types
         if (!isAnyBotAccount(event.player) && /^\s*wb\s*[!.]?\s*$/i.test(event.message)) {
           checkWbWatchers(event.player);
         }
-
-        // Trigger AI if applicable
-        if (entry.aiMode !== "off" && !isAnyBotAccount(event.player)) {
+        if (entry.aiMode !== "off" && !isAnyBotAccount(event.player) && entry.botType === "bridge") {
           if (/has made the advancement|has completed the challenge|has reached the goal/i.test(event.message)) break;
           handleAIChat(entry, event.player, event.message, false);
         }
@@ -1956,19 +1981,23 @@ app.post("/api/plugin-event", (req, res) => {
       }
       case "player_advancement": {
         if (!isRealPlayer(event.player)) break;
-        pushChat(entry, { sender: "Server", message: `${event.player} earned: ${event.advancement}`, type: "server" });
+        if (entry.botType === "bridge") {
+          pushChat(entry, { sender: "Server", message: `${event.player} earned: ${event.advancement}`, type: "server" });
+        }
         break;
       }
       case "player_death": {
         if (!isRealPlayer(event.player)) break;
-        pushChat(entry, { sender: "Server", message: event.message, type: "server" });
+        if (entry.botType === "bridge") {
+          pushChat(entry, { sender: "Server", message: event.message, type: "server" });
+        }
         break;
       }
     }
   }
 
-  if (!bridgeFound && event.type === "player_join") {
-    console.log(`[MC-Presence] WARNING: No connected bridge bot to handle join event. Check your bridge bot is connected and botType=bridge.`);
+  if (!anyConnected && event.type === "player_join") {
+    console.log(`[MC-Presence] WARNING: No connected bots to handle bridge event.`);
   }
 
   res.json({ ok: true });
@@ -2055,6 +2084,20 @@ setInterval(() => {
     io.emit("session:metrics", { id: entry.id, latency, uptime });
   }
 }, 5000);
+
+// ---------------------------------------------------------------------------
+// Player list refresh — every 30 seconds
+// ---------------------------------------------------------------------------
+setInterval(() => {
+  for (const [, entry] of bots) {
+    if (entry.state !== "connected") continue;
+    if (entry.botType === "mineflayer" && entry.bot) {
+      io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
+    } else if (entry.botType === "bridge") {
+      refreshBridgePlayers(entry);
+    }
+  }
+}, 30000);
 
 // ---------------------------------------------------------------------------
 // Anti-AFK loop — every 45 seconds

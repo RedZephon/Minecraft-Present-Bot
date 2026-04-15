@@ -333,18 +333,41 @@ function renderChatHeader() {
     </div>
   `;
 
+  // Desktop buttons
   let actions = '';
   if (getConnectedBots().length > 1) {
-    actions += '<div style="position:relative;"><button class="btn" id="btnSwitch" onclick="toggleSwitchDropdown()"><i class="fa-solid fa-arrow-right-arrow-left"></i> Switch</button><div class="switch-dropdown" id="switchDropdown"></div></div>';
+    actions += '<div style="position:relative;" class="desktop-only"><button class="btn" id="btnSwitch" onclick="toggleSwitchDropdown()"><i class="fa-solid fa-arrow-right-arrow-left"></i> Switch</button><div class="switch-dropdown" id="switchDropdown"></div></div>';
   }
   if (isConnected) {
-    actions += `<button class="btn danger" onclick="doDisconnect('${bot.id}')"><i class="fa-solid fa-power-off"></i> Disconnect</button>`;
+    actions += `<button class="btn danger desktop-only" onclick="doDisconnect('${bot.id}')"><i class="fa-solid fa-power-off"></i> Disconnect</button>`;
   } else if (bot.state === 'disconnected') {
     actions += `<button class="btn primary" onclick="doConnect('${bot.id}')"><i class="fa-solid fa-plug"></i> Connect</button>`;
   }
   if (!state.detailsOpen) {
-    actions += '<button class="btn" onclick="toggleDetails()" title="Show details"><i class="fa-solid fa-table-columns"></i></button>';
+    actions += '<button class="btn desktop-only" onclick="toggleDetails()" title="Show details"><i class="fa-solid fa-table-columns"></i></button>';
   }
+
+  // Mobile combined actions button
+  let mobileDropdownItems = '';
+  if (getConnectedBots().length > 1) {
+    for (const b of getConnectedBots()) {
+      const n = b.connectedUsername || b.label;
+      const cur = b.id === state.activeSessionId ? ' (current)' : '';
+      mobileDropdownItems += `<button class="btn" onclick="switchToSession('${b.id}');closeMobileActions();"><i class="fa-solid fa-arrow-right-arrow-left"></i> ${esc(n)}${cur}</button>`;
+    }
+  }
+  if (isConnected) {
+    mobileDropdownItems += `<button class="btn danger" onclick="doDisconnect('${bot.id}');closeMobileActions();"><i class="fa-solid fa-power-off"></i> Disconnect</button>`;
+  }
+  mobileDropdownItems += `<button class="btn" onclick="openMobileDetails();closeMobileActions();"><i class="fa-solid fa-circle-info"></i> Session Details</button>`;
+
+  actions += `
+    <div class="mobile-actions-wrap" style="position:relative;">
+      <button class="btn" onclick="toggleMobileActions()"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+      <div class="mobile-actions-dropdown">${mobileDropdownItems}</div>
+    </div>
+  `;
+
   $('chatActions').innerHTML = actions;
 }
 
@@ -664,8 +687,9 @@ function renderDetails() {
     </div>
 
     <div class="details-section">
-      <h4>Danger Zone</h4>
+      <h4>Manage</h4>
       <div class="danger-zone">
+        <button class="btn" onclick="openEditModal('${bot.id}')"><i class="fa-solid fa-pen-to-square"></i> Edit Session</button>
         <button class="btn danger" onclick="doRestart('${bot.id}')"><i class="fa-solid fa-rotate-right"></i> Restart Session</button>
         <button class="btn danger" onclick="confirmRemove('${bot.id}')"><i class="fa-solid fa-trash"></i> Remove Session</button>
       </div>
@@ -1201,6 +1225,51 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if ($('cmdPaletteOverlay').classList.contains('visible')) closeCommandPalette();
   }
+});
+
+// ─────────── Mobile sidebar / details drawers ───────────
+function openMobileSidebar() {
+  document.querySelector('.sidebar').classList.add('mobile-open');
+  $('sidebarOverlay').classList.add('visible');
+}
+function closeMobileSidebar() {
+  document.querySelector('.sidebar').classList.remove('mobile-open');
+  $('sidebarOverlay').classList.remove('visible');
+}
+function openMobileDetails() {
+  document.querySelector('.details').classList.add('mobile-open');
+  $('detailsOverlay').classList.add('visible');
+}
+function closeMobileDetails() {
+  document.querySelector('.details').classList.remove('mobile-open');
+  $('detailsOverlay').classList.remove('visible');
+}
+
+$('btnMobileSidebar').addEventListener('click', openMobileSidebar);
+$('sidebarOverlay').addEventListener('click', closeMobileSidebar);
+$('btnMobileDetails').addEventListener('click', openMobileDetails);
+$('detailsOverlay').addEventListener('click', closeMobileDetails);
+
+// Close mobile sidebar when selecting a session
+const origSelectSession = selectSession;
+selectSession = function(id) {
+  origSelectSession(id);
+  closeMobileSidebar();
+};
+
+// ─────────── Mobile actions dropdown ───────────
+function toggleMobileActions() {
+  const dd = document.querySelector('.mobile-actions-dropdown');
+  if (dd) dd.classList.toggle('visible');
+}
+
+function closeMobileActions() {
+  const dd = document.querySelector('.mobile-actions-dropdown');
+  if (dd) dd.classList.remove('visible');
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.mobile-actions-wrap')) closeMobileActions();
 });
 
 // ─────────── Uptime ticker ───────────
