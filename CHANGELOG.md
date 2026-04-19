@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.3
+
+### Fixes
+- **Missing sign-in messages** — the v2.0.2 CobbleBridge suppression was global (any bridge event muted mineflayer's join/leave broadcast parse). If the plugin emitted quits but not joins, join messages vanished entirely. Suppression is now tracked per event type: joins are only suppressed while the bridge is actively emitting joins, quits only while it's actively emitting quits. If the plugin only emits one type, the other still flows through mineflayer's server broadcast.
+
 ## v2.0.2
 
 Behavior audit fixes + codebase health pass.

@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.2";
+const APP_VERSION = "2.0.3";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -1608,9 +1608,11 @@ async function connectBot(id, isReconnect) {
     const isLeave = /^\[-\]|left the server|lost connection|logged out/i.test(text);
     const isDeath = /was slain|was shot|drowned|burned|fell|blew up|was killed|hit the ground|withered|was squashed/i.test(text);
 
-    // When CobbleBridge is delivering events, it is the source of truth — suppress
-    // the server-broadcast copy here to avoid duplicate entries in the session log.
-    if (isBridgeActive() && (isJoin || isLeave)) return;
+    // Suppress only the types that CobbleBridge is actively emitting; otherwise
+    // the server broadcast is our only source for that event type and dropping
+    // it would make messages vanish entirely.
+    if (isJoin && isBridgeJoinActive()) return;
+    if (isLeave && isBridgeQuitActive()) return;
 
     if (isJoin) {
       pushChat(entry, { sender: "Server", message: text, type: "join" });
@@ -1619,8 +1621,9 @@ async function connectBot(id, isReconnect) {
     } else if (isDeath) {
       pushChat(entry, { sender: "Server", message: text, type: "server" });
     } else if (/joined|left|logged/i.test(text)) {
-      // Catch any other join/leave patterns as generic server messages
-      if (isBridgeActive()) return;
+      // Catch any other join/leave patterns as generic server messages. Only
+      // drop if the bridge is covering both sides.
+      if (isBridgeJoinActive() && isBridgeQuitActive()) return;
       pushChat(entry, { sender: "Server", message: text, type: "server" });
     }
   });
@@ -2126,9 +2129,11 @@ app.post("/api/plugin-event", (req, res) => {
 
   console.log(`[MC-Presence] Bridge event: ${event.type} - ${event.player || ""} | payload: ${JSON.stringify(event).slice(0, 200)}`);
 
-  // CobbleBridge is the authoritative source for server events when available.
-  // Mark it so mineflayer bots can suppress their own duplicate server-broadcast parses.
-  bridgeActiveUntil = Date.now() + BRIDGE_ACTIVE_TTL_MS;
+  // CobbleBridge is the authoritative source for server events *of the types
+  // it actually emits*. Track join/quit separately so mineflayer can still
+  // surface server-broadcast messages for any type the plugin isn't sending.
+  if (event.type === "player_join") bridgeLastAt.join = Date.now();
+  if (event.type === "player_quit") bridgeLastAt.quit = Date.now();
 
   // First-time detection via bridge is reliable — mark once globally
   if (event.type === "player_join" && event.firstTime === true && event.player) {
@@ -2209,13 +2214,14 @@ app.post("/api/plugin-event", (req, res) => {
   res.json({ ok: true });
 });
 
-// Track whether CobbleBridge is actively delivering events — when true, mineflayer
-// bots suppress their own server-broadcast parse to avoid duplicate join/leave/death logs.
-let bridgeActiveUntil = 0;
+// Track when CobbleBridge last delivered each kind of event. Suppression of
+// the mineflayer server-broadcast parse is per-type so that a plugin which
+// only emits some events (e.g. quits but not joins) doesn't cause messages
+// to vanish entirely.
+const bridgeLastAt = { join: 0, quit: 0 };
 const BRIDGE_ACTIVE_TTL_MS = 5 * 60 * 1000; // 5 min
-function isBridgeActive() {
-  return Date.now() < bridgeActiveUntil;
-}
+function isBridgeJoinActive() { return Date.now() - bridgeLastAt.join < BRIDGE_ACTIVE_TTL_MS; }
+function isBridgeQuitActive() { return Date.now() - bridgeLastAt.quit < BRIDGE_ACTIVE_TTL_MS; }
 
 async function refreshBridgePlayers(entry) {
   try {
