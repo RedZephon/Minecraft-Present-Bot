@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.5
+
+### Fixes
+- **Self-greeting bug** — the self-check in the AI greeting path used strict `===` comparison which is case-sensitive. Minecraft usernames can arrive with different casing depending on the event source (tab list vs server broadcast), so a bot could end up saying "wb" to itself on join. Added `isThisBot(entry, name)` helper with case-insensitive comparison across MC username, label, and connectedUsername. Used in `handlePlayerJoinAI`, `handleBridgePlayerJoin`, and the mineflayer `playerJoined` handler. Self-skip is now logged so it's easy to verify.
+
 ## v2.0.4
 
 ### Fixes

@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.4";
+const APP_VERSION = "2.0.5";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -352,6 +352,19 @@ function isBridgeBotLabel(username) {
   for (const [, entry] of bots) {
     if (entry.botType === "bridge" && entry.label && entry.label.toLowerCase() === lower) return true;
   }
+  return false;
+}
+
+// True if `name` matches the given entry's own identity (MC username, label,
+// or connectedUsername), case-insensitively. Used to block self-greetings.
+// Belt-and-suspenders alongside isAnyBotAccount — checks just this one entry's
+// identity so we catch cases where the event refers to *this* bot specifically.
+function isThisBot(entry, name) {
+  if (!entry || !name) return false;
+  const lower = name.toLowerCase();
+  if (entry.bot?.username && entry.bot.username.toLowerCase() === lower) return true;
+  if (entry.connectedUsername && entry.connectedUsername.toLowerCase() === lower) return true;
+  if (entry.label && entry.label.toLowerCase() === lower) return true;
   return false;
 }
 
@@ -1298,8 +1311,13 @@ async function handlePlayerJoinAI(entry, playerName) {
   if (entry.aiMode === "off" || !entry.bot || entry.state !== "connected") return;
   const botName = entry.bot?.username || entry.label;
 
-  // Bulletproof self/bot check — NEVER greet ourselves or other bots
-  if (playerName === botName) return;
+  // Bulletproof self/bot check — NEVER greet ourselves or other bots.
+  // Case-insensitive because the joined username can arrive with different
+  // casing depending on the event source (tab list vs server broadcast).
+  if (isThisBot(entry, playerName)) {
+    console.log(`[MC-Presence] [${entry.label}] Self-greet skipped for ${playerName}`);
+    return;
+  }
   if (isAnyBotAccount(playerName)) return;
 
   // 5-minute rejoin cooldown — don't greet if they just reconnected
@@ -1673,7 +1691,9 @@ async function connectBot(id, isReconnect) {
   bot.on("playerJoined", (player) => {
     if (!hasSpawned) return; // Skip tab list population during login
     if (!isRealPlayer(player.username)) return;
-    if (bot.username && player.username === bot.username) return;
+    // Case-insensitive self-check — usernames can come through with different
+    // casing depending on the source (tab list vs server broadcast).
+    if (isThisBot(entry, player.username)) return;
     // Don't push chat here — the server broadcast via bot.on("message") already
     // emits the formatted join message (e.g. "RedZephon logged in via JAVA").
     io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
@@ -2282,6 +2302,11 @@ async function refreshBridgePlayers(entry) {
 
 async function handleBridgePlayerJoin(entry, playerName, firstTime) {
   if (!settings.aiEnabled) return;
+  // Self-greet guard (case-insensitive against this bot's own identity)
+  if (isThisBot(entry, playerName)) {
+    console.log(`[MC-Presence] [${entry.label}] Bridge self-greet skipped for ${playerName}`);
+    return;
+  }
   if (isAnyBotAccount(playerName)) return;
   if (hasRecentRejoin(playerName)) return;
   if (hasRecentGreeting(entry.id, playerName)) return;
