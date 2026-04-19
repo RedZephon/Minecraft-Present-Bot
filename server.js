@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.3";
+const APP_VERSION = "2.0.4";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -343,6 +343,18 @@ function isAnyBotAccount(username) {
   return false;
 }
 
+// True if the given username matches a *bridge* bot's label. Used to suppress
+// mineflayer chat events that originated from our own bridge bots (which we
+// already mirrored directly into every session's log).
+function isBridgeBotLabel(username) {
+  if (!username) return false;
+  const lower = username.toLowerCase();
+  for (const [, entry] of bots) {
+    if (entry.botType === "bridge" && entry.label && entry.label.toLowerCase() === lower) return true;
+  }
+  return false;
+}
+
 function registerBotUsername(mcUsername, botId) {
   if (mcUsername) botMcUsernames.set(mcUsername.toLowerCase(), botId);
 }
@@ -373,6 +385,9 @@ function serializeBot(entry, opts = {}) {
     mode: entry.mode, aiMode: entry.aiMode, botType: entry.botType,
     paused: entry.paused, schedule: entry.schedule,
     state: entry.state, connectedAt: entry.connectedAt,
+    // Exposed so the frontend can render correct avatars for bots whose label
+    // differs from the MC username (and for any per-session "speaking as" UI).
+    connectedUsername: entry.connectedUsername || (entry.bot?.username ?? null),
     players: entry.botType === "bridge" ? (entry.bridgePlayers || []) : getPlayerList(entry),
     reconnectAttempts: entry.reconnectAttempts,
     yieldedDuplicate: entry.yieldedDuplicate,
@@ -726,7 +741,29 @@ function sendBotMessage(entry, message, opts = {}) {
   botDailyStats.set(dayKey, (botDailyStats.get(dayKey) || 0) + 1);
 
   pushChat(entry, { sender: botName, message: clean, type: "self" });
+
+  // Bridge-bot chat doesn't reliably propagate to other mineflayer sessions —
+  // the plugin broadcast may not emit bot.on("chat") events, or the virtual
+  // player isn't in the tab list and gets filtered as a system line. Mirror
+  // public messages (not whispers) directly into every other connected
+  // session's log so they show consistently.
+  if (entry.botType === "bridge" && !opts.whisperTo) {
+    mirrorBridgeChatToOtherSessions(entry.id, botName, clean);
+  }
+
   return true;
+}
+
+// Mirror a bridge bot's chat to all other connected sessions so it appears as
+// a normal chat line in every session's log. Skips the origin session (which
+// already received the self-push) and any bridge bots (they'd double-display
+// if two bridge bots somehow chained).
+function mirrorBridgeChatToOtherSessions(originBotId, senderLabel, message) {
+  for (const [id, entry] of bots) {
+    if (id === originBotId) continue;
+    if (entry.state !== "connected") continue;
+    pushChat(entry, { sender: senderLabel, message, type: "chat" });
+  }
 }
 
 // Register a wb watcher — called after a disguise bot sends "wb"
@@ -1554,6 +1591,11 @@ async function connectBot(id, isReconnect) {
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
 
+    // If this chat originated from one of our bridge bots, it was already
+    // mirrored directly into this session's log by mirrorBridgeChatToOtherSessions.
+    // Skip to avoid a duplicate entry.
+    if (isBridgeBotLabel(username)) return;
+
     // Use the tab list as the source of truth for real players.
     // Plugin broadcasts (Lands, Skills, etc.) appear as chat from usernames
     // that aren't actually in the player tab list. This check is universal
@@ -1883,6 +1925,7 @@ io.on("connection", (socket) => {
         } else {
           bridgeSendChat(clean, entry.label || "MC Bot");
           pushChat(entry, { sender: entry.label, message: clean, type: "self" });
+          mirrorBridgeChatToOtherSessions(entry.id, entry.label, clean);
         }
       } else {
         entry.bot.chat(msg);

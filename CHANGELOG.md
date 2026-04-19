@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.4
+
+### Fixes
+- **Avatars now use the correct MC username** — `connectedUsername` was set server-side but never included in `serializeBot`, so the frontend always fell back to `bot.label` when rendering avatars via mc-heads.net. If a bot's label differed from its MC username, the default Steve skin was shown. The field is now exported.
+- **Bridge-bot chat mirrors to all session logs** — CobbleBot and other CobbleBridge-type bots broadcast via the plugin, but mineflayer sessions either don't receive those events or filter them as system messages (since the virtual player isn't in the tab list). Bridge-bot public messages are now mirrored directly into every other connected session's chat log as regular chat lines. Includes manual sends via the Chat input and AI-generated responses. Whispers are not mirrored. A de-dup guard in mineflayer's `bot.on("chat")` skips any line whose sender matches a known bridge-bot label.
+
 ## v2.0.3
 
 ### Fixes
