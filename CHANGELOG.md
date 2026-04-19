@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.0.2
+
+Behavior audit fixes + codebase health pass.
+
+### Code health
+- **Removed dead code** — `aiAssistant` field (serialized, never read) and `isBotWithAI` helper (defined, never called).
+- **Unified greeting logic** — extracted `buildGreetingMessage()` + `afterGreetingSent()`; mineflayer and bridge paths no longer duplicate the welcome/wb template tree (~60 lines removed).
+- **serializeBot chatLog trim** — `botUpdated` emits no longer include the full 300-message log. The log is only sent on initial fetch (`/api/status`, socket connect, `botAdded`). The frontend already tracks individual chat events via the `chat` socket event. This prevents ~60KB/emit × clients fanout on every state change.
+- **Bounded memory** — hourly sweep evicts stale entries from `aiCooldowns`, `recentGreetings`, `greetingCooldowns`, `frustrationOffers`, `recentOwnerChat`, `botSilenceUntil`, `lastAfkIssuedAt`, and collapses `botDailyStats` to today's keys only.
+- **`botMcUsernames` leak fixed** — entries are now cleared when a bot disconnects, preventing stale name→id mappings.
+- **Missing `await`** — `bridgeSendChat` now awaits `callBridgeAPI` and logs bridge errors instead of dropping them.
+- **Silent catches logged** — `refreshBridgePlayers` now surfaces errors.
+- **Per-bot timer tracking** — `registerBotTimeout()` stores timer handles on the entry; `disconnectBot`, `disconnectBridgeBot`, and `removeBot` now cancel all pending timers so torn-down bots can't fire delayed callbacks (greeting delays, post-reply re-`/afk`, frustration offers, spawn-time `/afk`).
+
+### Reliability
+- **Auto Reconnect toggle now works** — the toggle was previously saved but never checked; reconnection was driven entirely by `mode`. Both `scheduleReconnect()` and the schedule ticker now honor `autoReconnect`.
+- **Removed dead `autoConnect` legacy fallback** in `registerBot`.
+
+### AI
+- **Support bot silence command hardened** — required multi-word phrases (`"shut up"`, `"stop talking"`, etc.). A bare "stop" no longer silences the bot. Resume/unmute only fires when the bot is actually silenced.
+- **AFK Responder `/afk` automation** — the bot now issues `/afk` on spawn (when admin-afk is configured), on mode activation, and re-issues it after public-chat replies (rate-limited to once per 60s). Toggling off admin-afk sends a second `/afk` to un-AFK.
+- **Anti-AFK upgraded** — the 45s loop now does look rotation + arm swing + a brief sneak pulse so it actually defeats CMI AFK detection. Skipped when the bot is in admin-afk mode.
+- **Known players are now shared globally** — welcome vs "wb" is consistent across all bots. Previously each bot tracked its own known-players set, so a fresh bot would welcome long-time players.
+- **Unified first-time detection** — `resolveFirstTime()` checks confirmed bridge flag, bridge-reported player file creation time (< 60s = new), then falls back to the global known-players set.
+
+### CobbleBridge
+- **Bridge is now the source of truth when active** — join/leave/death events from the plugin are routed to all session logs with consistent formatting (`<player> logged in`). Mineflayer bots suppress duplicate server-broadcast parses while the bridge is active (5-minute TTL after last event).
+
+### Discord
+- **Webhook identity fixed** — messages now always use the bot's MC username (or session label) as the Discord display name. Previously AI-mode messages showed as "Assistant" and manual bridge sends defaulted to "MC Presence", making it impossible to tell which session sent a message.
+
 ## v2.0.1
 
 Fixes and improvements since the v2.0.0 launch.

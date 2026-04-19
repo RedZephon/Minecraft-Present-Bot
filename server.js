@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.0.2";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -168,7 +168,6 @@ function saveBotConfigs() {
       paused: b.paused,
       autoReconnect: b.autoReconnect,
       antiAfk: b.antiAfk,
-      aiAssistant: b.aiAssistant,
       assistantName: b.assistantName,
     });
   }
@@ -260,6 +259,12 @@ function setBotState(entry, state, extra) {
   } else if (state === "disconnected" && activeSessionId === entry.id) {
     fallbackActiveSession();
   }
+
+  // Clean up any username->botId mappings when disconnected so stale entries
+  // don't leak if a bot is renamed or removed later.
+  if (state === "disconnected") {
+    unregisterBotUsername(entry.id);
+  }
 }
 
 function emitGlobalStats() {
@@ -326,19 +331,6 @@ function splitMcChat(text) {
 // Confirmed bot MC usernames — populated on spawn, persists in memory
 const botMcUsernames = new Map(); // lowercase mc username -> botId
 
-function isBotWithAI(username) {
-  // Returns true only if this username belongs to a bot that has AI mode ON
-  const lower = username.toLowerCase();
-  for (const [, entry] of bots) {
-    const mcName = (entry.bot?.username || entry.connectedUsername || "").toLowerCase();
-    const labelName = (entry.label || "").toLowerCase();
-    if (mcName === lower || labelName === lower || botMcUsernames.get(lower) === entry.id) {
-      return entry.aiMode && entry.aiMode !== "off";
-    }
-  }
-  return false;
-}
-
 function isAnyBotAccount(username) {
   // Returns true if this username belongs to ANY bot, regardless of AI mode
   const lower = username.toLowerCase();
@@ -355,6 +347,12 @@ function registerBotUsername(mcUsername, botId) {
   if (mcUsername) botMcUsernames.set(mcUsername.toLowerCase(), botId);
 }
 
+function unregisterBotUsername(botId) {
+  for (const [name, id] of botMcUsernames) {
+    if (id === botId) botMcUsernames.delete(name);
+  }
+}
+
 function getPlayerList(entry) {
   if (!entry.bot || !entry.bot.players) return [];
   return Object.values(entry.bot.players)
@@ -362,8 +360,13 @@ function getPlayerList(entry) {
     .map(p => ({ username: p.username, ping: p.ping, uuid: p.uuid }));
 }
 
-function serializeBot(entry) {
-  return {
+// Serialize a bot for the frontend.
+//   opts.includeLog: include the full chatLog. Only true for initial loads
+//   (/api/status, botAdded) — ongoing botUpdated emits omit it because the
+//   frontend has already received individual messages via the "chat" socket
+//   event. Including it on every update broadcasts ~60KB per emit per client.
+function serializeBot(entry, opts = {}) {
+  const payload = {
     id: entry.id, label: entry.label, username: entry.username,
     host: entry.host, port: entry.port, auth: entry.auth,
     version: entry.version, detectedVersion: entry.detectedVersion,
@@ -371,15 +374,15 @@ function serializeBot(entry) {
     paused: entry.paused, schedule: entry.schedule,
     state: entry.state, connectedAt: entry.connectedAt,
     players: entry.botType === "bridge" ? (entry.bridgePlayers || []) : getPlayerList(entry),
-    chatLog: entry.chatLog,
     reconnectAttempts: entry.reconnectAttempts,
     yieldedDuplicate: entry.yieldedDuplicate,
     msaCode: entry.msaCode,
     autoReconnect: entry.autoReconnect,
     antiAfk: entry.antiAfk,
-    aiAssistant: entry.aiAssistant,
     assistantName: entry.assistantName,
   };
+  if (opts.includeLog) payload.chatLog = entry.chatLog;
+  return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +416,9 @@ function scheduleReconnect(entry) {
 
   // Don't reconnect if manual mode
   if (entry.mode === "manual") return;
+
+  // Don't reconnect if auto-reconnect toggle is off
+  if (!entry.autoReconnect) return;
 
   // Don't reconnect if paused
   if (entry.paused) return;
@@ -507,6 +513,48 @@ function isOwnerUsername(playerName) {
   return playerName.toLowerCase() === settings.ownerUsername.toLowerCase();
 }
 
+// --- /afk state management for admin-afk mode ---
+// Track the last time we issued /afk so CMI-triggered re-issues after AI replies
+// don't spam the chat. Minimum 60s between re-issues per bot.
+const lastAfkIssuedAt = new Map(); // botId -> timestamp
+const AFK_REISSUE_COOLDOWN_MS = 60 * 1000;
+
+function issueAfkCommand(entry, reason) {
+  if (!entry || !entry.bot || entry.state !== "connected") return false;
+  if (entry.botType !== "mineflayer") return false;
+  const last = lastAfkIssuedAt.get(entry.id) || 0;
+  if (Date.now() - last < AFK_REISSUE_COOLDOWN_MS) return false;
+  try {
+    entry.bot.chat("/afk");
+    lastAfkIssuedAt.set(entry.id, Date.now());
+    console.log(`[MC-Presence] [${entry.label}] /afk issued (${reason})`);
+    return true;
+  } catch (err) {
+    console.error(`[MC-Presence] [${entry.label}] /afk failed:`, err.message);
+    return false;
+  }
+}
+
+function applyAfkModeTransition(entry, prevMode, nextMode) {
+  if (!entry || !entry.bot || entry.state !== "connected") return;
+  if (entry.botType !== "mineflayer") return;
+  // Entering admin-afk
+  if (nextMode === "admin-afk" && prevMode !== "admin-afk") {
+    // Clear cooldown so activation always fires
+    lastAfkIssuedAt.delete(entry.id);
+    issueAfkCommand(entry, "mode activated");
+  }
+  // Leaving admin-afk
+  if (prevMode === "admin-afk" && nextMode !== "admin-afk") {
+    try {
+      // Most AFK plugins (CMI included) toggle — re-issuing /afk un-afks.
+      entry.bot.chat("/afk");
+      lastAfkIssuedAt.delete(entry.id);
+      console.log(`[MC-Presence] [${entry.label}] /afk toggled off (mode deactivated)`);
+    } catch (_) {}
+  }
+}
+
 function trackOwnerChat(botId, playerName) {
   // Track when the owner chats — support bot should back off
   if (isOwnerUsername(playerName)) {
@@ -520,29 +568,30 @@ function isOwnerActivelyHelping(botId) {
   // Owner chatted in last 2 minutes = actively helping
   return Date.now() - last < 120000;
 }
-const knownPlayers = new Map(); // botId -> Set of player names
+// Global — shared across all bots so welcome/wb is consistent.
+const knownPlayers = new Set();
 const KNOWN_PLAYERS_PATH = path.join(DATA_DIR, "known-players.json");
 
 function loadKnownPlayers() {
   try {
-    if (fs.existsSync(KNOWN_PLAYERS_PATH)) {
-      const data = JSON.parse(fs.readFileSync(KNOWN_PLAYERS_PATH, "utf-8"));
-      for (const [botId, names] of Object.entries(data)) {
-        knownPlayers.set(botId, new Set(names));
+    if (!fs.existsSync(KNOWN_PLAYERS_PATH)) return;
+    const data = JSON.parse(fs.readFileSync(KNOWN_PLAYERS_PATH, "utf-8"));
+    if (Array.isArray(data)) {
+      for (const name of data) knownPlayers.add(name);
+    } else if (data && typeof data === "object") {
+      // Legacy per-bot shape: { botId: [names...] } — merge into global set
+      for (const names of Object.values(data)) {
+        if (Array.isArray(names)) for (const n of names) knownPlayers.add(n);
       }
-      console.log("[MC-Presence] Known players loaded");
     }
+    console.log(`[MC-Presence] Known players loaded (${knownPlayers.size})`);
   } catch (_) {}
 }
 
 function saveKnownPlayers() {
   try {
     ensureDataDir();
-    const obj = {};
-    for (const [botId, nameSet] of knownPlayers) {
-      obj[botId] = Array.from(nameSet);
-    }
-    fs.writeFileSync(KNOWN_PLAYERS_PATH, JSON.stringify(obj));
+    fs.writeFileSync(KNOWN_PLAYERS_PATH, JSON.stringify(Array.from(knownPlayers)));
   } catch (_) {}
 }
 
@@ -562,6 +611,31 @@ setInterval(() => {
   const cutoff = Date.now() - 15000;
   while (wbWatchers.length > 0 && wbWatchers[0].sentAt < cutoff) wbWatchers.shift();
 }, 15000);
+
+// Hourly sweep: evict stale entries from unbounded timestamp-keyed maps so
+// memory doesn't creep upward on long-running instances. Each map has its own
+// natural TTL; we use a conservative 24h cap as a safety net.
+setInterval(() => {
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const evictOlder = (map, maxAge) => {
+    for (const [key, ts] of map) {
+      if (typeof ts === "number" && now - ts > maxAge) map.delete(key);
+    }
+  };
+  evictOlder(aiCooldowns, DAY);
+  evictOlder(recentGreetings, 60 * 1000);           // 30s dedup window
+  evictOlder(greetingCooldowns, 30 * 60 * 1000);    // 5m rejoin cooldown
+  evictOlder(frustrationOffers, 24 * 60 * 60 * 1000); // 20m throttle window, cap day
+  evictOlder(recentOwnerChat, 60 * 60 * 1000);      // 2m actively-helping window
+  evictOlder(botSilenceUntil, DAY);                  // silence already expires; drop old keys
+  evictOlder(lastAfkIssuedAt, DAY);
+  // botDailyStats: key includes date string — drop anything not today's key
+  const today = new Date().toDateString();
+  for (const key of botDailyStats.keys()) {
+    if (!key.endsWith(":" + today)) botDailyStats.delete(key);
+  }
+}, 60 * 60 * 1000);
 
 // Check if we recently greeted this player from this bot (30s window)
 function hasRecentGreeting(botId, playerName) {
@@ -617,10 +691,11 @@ function sendBotMessage(entry, message, opts = {}) {
     return false;
   }
 
-  // Resolve display name for webhooks: assistantName for AI, MC username otherwise
-  const webhookName = (entry.aiMode && entry.aiMode !== "off")
-    ? (entry.assistantName || "Assistant")
-    : (entry.bot?.username || entry.label);
+  // Webhook display name: always the bot's MC username (falling back to the
+  // session label). We deliberately do NOT use assistantName for Discord so the
+  // source bot is always identifiable — assistantName is only used internally
+  // as an AI persona label.
+  const webhookName = entry.bot?.username || entry.label || "MC Bot";
 
   try {
     if (entry.botType === "bridge") {
@@ -716,7 +791,7 @@ function checkFrustration(entry, playerName, message) {
 
   // Delay before offering (feels organic)
   const delay = 3000 + Math.random() * 4000;
-  setTimeout(() => {
+  registerBotTimeout(entry, () => {
     if (entry.state !== "connected") return;
 
     const offers = [
@@ -736,12 +811,14 @@ function checkFrustration(entry, playerName, message) {
 function seedKnownPlayers(entry) {
   // Add all currently online players so we don't welcome them as new
   if (!entry.bot || !entry.bot.players) return;
-  if (!knownPlayers.has(entry.id)) knownPlayers.set(entry.id, new Set());
-  const known = knownPlayers.get(entry.id);
+  let added = false;
   for (const p of Object.values(entry.bot.players)) {
-    if (p.username && isRealPlayer(p.username)) known.add(p.username);
+    if (p.username && isRealPlayer(p.username) && !knownPlayers.has(p.username)) {
+      knownPlayers.add(p.username);
+      added = true;
+    }
   }
-  saveKnownPlayers();
+  if (added) saveKnownPlayers();
 }
 
 function isOnCooldown(botId, playerName) {
@@ -771,13 +848,41 @@ function addChatContext(botId, role, content) {
   while (hist.length > 40) hist.shift();
 }
 
-function isFirstJoin(botId, playerName) {
-  if (!knownPlayers.has(botId)) knownPlayers.set(botId, new Set());
-  const known = knownPlayers.get(botId);
-  if (known.has(playerName)) return false;
-  known.add(playerName);
+// Mark a player as known (global). Returns true if this was the first time we've
+// seen them across any bot on this server.
+function markPlayerKnown(playerName) {
+  if (knownPlayers.has(playerName)) return false;
+  knownPlayers.add(playerName);
   saveKnownPlayers();
   return true;
+}
+
+// Resolve first-time status using the best available signal:
+//   1. Confirmed bridge firstTime flag (already in confirmedFirstTimers)
+//   2. Bridge /api/player — if player file is very recent (< 60s old) they're new
+//   3. Global knownPlayers set — fallback
+async function resolveFirstTime(playerName) {
+  if (confirmedFirstTimers.has(playerName)) {
+    confirmedFirstTimers.delete(playerName);
+    return true;
+  }
+  // Bridge-backed check — player file metadata
+  if (settings.bridge && settings.bridge.pluginUrl) {
+    try {
+      const info = await bridgePlayerInfo(playerName);
+      if (info && !info.error) {
+        // Accept several possible shapes the plugin might return
+        const first = info.firstJoin ?? info.firstPlayed ?? info.firstSeen ?? info.fileCreatedAt;
+        if (first) {
+          const firstMs = typeof first === "number" ? first : Date.parse(first);
+          if (!Number.isNaN(firstMs) && Date.now() - firstMs < 60 * 1000) return true;
+        }
+        if (info.isNew === true || info.firstTime === true) return true;
+      }
+    } catch (_) {}
+  }
+  // Global fallback
+  return !knownPlayers.has(playerName);
 }
 
 const DEFAULT_ADMIN_AFK_PROMPT = `You are {botName} on Minecraft. You are currently AFK (away from keyboard).
@@ -1007,16 +1112,17 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
 
     // Admin commands — only from owner, must mention bot
     if (mentionsBot && isOwner) {
-      // Silence with duration
+      // Silence with duration — require phrase anchored to bot mention, not just any "stop"
       const durationMatch = lower.match(/(\d+)\s*(?:min|m\b)/);
-      if (/(shut up|be quiet|silence|shush|hush|stop|don'?t respond)/.test(lower)) {
+      const silencePhrase = /\b(shut up|be quiet|silence yourself|silent mode|shush|hush|stop talking|stop responding|don'?t respond|stay quiet|mute)\b/;
+      if (silencePhrase.test(lower)) {
         const mins = durationMatch ? (parseInt(durationMatch[1], 10) || 5) : 5;
         silenceBot(entry.id, mins);
         sendBotMessage(entry, `Got it! I'll stay quiet for ${mins} minutes.`);
         return;
       }
-      // Resume (cancel silence early)
-      if (/\bresume\b/.test(lower)) {
+      // Resume (cancel silence early) — only when actually silenced
+      if (isBotSilenced(entry.id) && /\b(resume|unmute|speak|you can talk)\b/.test(lower)) {
         botSilenceUntil.delete(entry.id);
         sendBotMessage(entry, "I'm back! Ready to help.");
         return;
@@ -1090,6 +1196,7 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
   const chunks = splitMcChat(clean);
   // Support mode: max 2 messages; others: all chunks
   const maxChunks = entry.aiMode === "support" ? 2 : chunks.length;
+  let anySent = false;
   try {
     for (let i = 0; i < Math.min(chunks.length, maxChunks); i++) {
       if (i > 0) await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
@@ -1098,17 +1205,61 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
         skipDedup: true,
       });
       if (!sent) break; // Rate limited
+      anySent = true;
     }
     console.log(`[MC-Presence] [${entry.label}] AI (${entry.aiMode}) -> ${playerName}: ${clean.slice(0, 100)}${clean.length > 100 ? "..." : ""}`);
   } catch (err) {
     console.error(`[MC-Presence] [${entry.label}] AI chat send failed:`, err.message);
   }
+
+  // If we sent a reply in admin-afk mode via public chat, CMI will have auto-cleared
+  // the AFK state. Re-issue /afk after a short delay (rate-limited to avoid spam).
+  if (anySent && entry.aiMode === "admin-afk" && !isWhisper) {
+    registerBotTimeout(entry, () => issueAfkCommand(entry, "post-reply re-afk"), 1500);
+  }
+}
+
+// Build the greeting message for a player based on AI mode + first-time status.
+// Returns null if no greeting should be sent (e.g. returning player in support mode).
+function buildGreetingMessage(aiMode, playerName, botName, firstTime) {
+  switch (aiMode) {
+    case "admin-afk":
+      return firstTime
+        ? `Hey ${playerName}, welcome! I'm AFK right now - feel free to ask for help in chat`
+        : "wb";
+    case "support":
+      // Support bot does NOT say "wb" for returning players
+      return firstTime
+        ? `Welcome to the server, ${playerName}! I'm ${botName}, the AI support bot. Type @${botName} followed by your question anytime!`
+        : null;
+    case "disguise": {
+      if (!firstTime) return "wb";
+      const welcomes = ["welcome", "welcome!", "yo welcome", "welcome!!", "hey welcome"];
+      return welcomes[Math.floor(Math.random() * welcomes.length)];
+    }
+    default:
+      return null;
+  }
+}
+
+// Shared post-send bookkeeping for greetings (called by both mineflayer and bridge paths).
+function afterGreetingSent(entry, playerName, msg) {
+  markGreeting(entry.id, playerName);
+  markPlayerGreeted(playerName);
+  setCooldown(entry.id, playerName);
+  if (entry.aiMode === "disguise" && msg === "wb") {
+    registerWbWatcher(entry.id, playerName);
+  }
+  if (entry.aiMode === "admin-afk") {
+    registerBotTimeout(entry, () => issueAfkCommand(entry, "post-greeting re-afk"), 1500);
+  }
+  console.log(`[MC-Presence] [${entry.label}] Greeting -> ${playerName}: ${msg}`);
 }
 
 async function handlePlayerJoinAI(entry, playerName) {
   if (!settings.aiEnabled) return;
   if (entry.aiMode === "off" || !entry.bot || entry.state !== "connected") return;
-  const botName = entry.bot.username;
+  const botName = entry.bot?.username || entry.label;
 
   // Bulletproof self/bot check — NEVER greet ourselves or other bots
   if (playerName === botName) return;
@@ -1134,52 +1285,15 @@ async function handlePlayerJoinAI(entry, playerName) {
   await new Promise(r => setTimeout(r, delay));
 
   if (!entry.bot || entry.state !== "connected") return;
-  // Re-check dedup after delay
   if (hasRecentGreeting(entry.id, playerName)) return;
 
-  const firstTime = confirmedFirstTimers.has(playerName);
-  if (firstTime) confirmedFirstTimers.delete(playerName);
-  isFirstJoin(entry.id, playerName);
+  const firstTime = await resolveFirstTime(playerName);
+  markPlayerKnown(playerName);
 
-  let msg;
-
-  if (entry.aiMode === "admin-afk") {
-    if (firstTime) {
-      msg = `Hey ${playerName}, welcome! I'm AFK right now - feel free to ask for help in chat`;
-    } else {
-      msg = "wb";
-    }
-  }
-
-  if (entry.aiMode === "support") {
-    if (firstTime) {
-      msg = `Welcome to the server, ${playerName}! I'm ${botName}, the AI support bot. Type @${botName} followed by your question anytime!`;
-    }
-    // Support bot does NOT say "wb" for returning players (only disguise bots do)
-  }
-
-  if (entry.aiMode === "disguise") {
-    if (firstTime) {
-      const welcomes = ["welcome", "welcome!", "yo welcome", "welcome!!", "hey welcome"];
-      msg = welcomes[Math.floor(Math.random() * welcomes.length)];
-    } else {
-      msg = "wb";
-    }
-  }
-
+  const msg = buildGreetingMessage(entry.aiMode, playerName, botName, firstTime);
   if (!msg) return;
 
-  const sent = sendBotMessage(entry, msg);
-  if (sent) {
-    markGreeting(entry.id, playerName);
-    markPlayerGreeted(playerName);
-    setCooldown(entry.id, playerName);
-    // Register wb watcher if disguise bot said "wb"
-    if (entry.aiMode === "disguise" && msg === "wb") {
-      registerWbWatcher(entry.id, playerName);
-    }
-    console.log(`[MC-Presence] [${entry.label}] Greeting -> ${playerName}: ${msg}`);
-  }
+  if (sendBotMessage(entry, msg)) afterGreetingSent(entry, playerName, msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,9 +1315,8 @@ function registerBot(cfg) {
     aiMode: cfg.aiMode || "off",  // off | admin-afk | support | disguise
     botType: cfg.botType || "mineflayer", // mineflayer | bridge
     paused: cfg.paused || false,
-    autoReconnect: cfg.autoReconnect !== undefined ? cfg.autoReconnect : (cfg.autoConnect !== undefined ? cfg.autoConnect : true),
+    autoReconnect: cfg.autoReconnect !== undefined ? cfg.autoReconnect : true,
     antiAfk: cfg.antiAfk !== undefined ? cfg.antiAfk : true,
-    aiAssistant: cfg.aiAssistant !== undefined ? cfg.aiAssistant : false,
     assistantName: cfg.assistantName || "Assistant",
     schedule: cfg.schedule || { start: "00:00", end: "08:00" },
     state: "disconnected",
@@ -1217,10 +1330,33 @@ function registerBot(cfg) {
     yieldedDuplicate: false,
     lastKickReason: null,
     msaCode: null,
+    pendingTimers: new Set(),
   };
 
   bots.set(id, entry);
   return entry;
+}
+
+// Schedule a timeout tied to a bot entry. The handle is tracked so it can be
+// cancelled en masse when the bot is removed or disconnected, preventing
+// orphaned callbacks from acting on a torn-down entry.
+function registerBotTimeout(entry, fn, ms) {
+  if (!entry) return null;
+  if (!entry.pendingTimers) entry.pendingTimers = new Set();
+  const handle = setTimeout(() => {
+    entry.pendingTimers?.delete(handle);
+    try { fn(); } catch (err) {
+      console.error(`[MC-Presence] [${entry.label}] pending timer error:`, err.message);
+    }
+  }, ms);
+  entry.pendingTimers.add(handle);
+  return handle;
+}
+
+function clearBotTimers(entry) {
+  if (!entry || !entry.pendingTimers) return;
+  for (const handle of entry.pendingTimers) clearTimeout(handle);
+  entry.pendingTimers.clear();
 }
 
 async function connectBot(id, isReconnect) {
@@ -1406,6 +1542,13 @@ async function connectBot(id, isReconnect) {
     seedKnownPlayers(entry);
     hasSpawned = true;
     console.log(`[MC-Presence] [${entry.label}] Spawned as ${bot.username}`);
+    // If the bot is configured for admin-afk mode, issue /afk on spawn.
+    if (entry.aiMode === "admin-afk") {
+      registerBotTimeout(entry, () => {
+        lastAfkIssuedAt.delete(entry.id); // ensure first issue isn't rate-limited
+        issueAfkCommand(entry, "spawn");
+      }, 3000);
+    }
   });
 
   bot.on("chat", (username, message) => {
@@ -1465,6 +1608,10 @@ async function connectBot(id, isReconnect) {
     const isLeave = /^\[-\]|left the server|lost connection|logged out/i.test(text);
     const isDeath = /was slain|was shot|drowned|burned|fell|blew up|was killed|hit the ground|withered|was squashed/i.test(text);
 
+    // When CobbleBridge is delivering events, it is the source of truth — suppress
+    // the server-broadcast copy here to avoid duplicate entries in the session log.
+    if (isBridgeActive() && (isJoin || isLeave)) return;
+
     if (isJoin) {
       pushChat(entry, { sender: "Server", message: text, type: "join" });
     } else if (isLeave) {
@@ -1473,6 +1620,7 @@ async function connectBot(id, isReconnect) {
       pushChat(entry, { sender: "Server", message: text, type: "server" });
     } else if (/joined|left|logged/i.test(text)) {
       // Catch any other join/leave patterns as generic server messages
+      if (isBridgeActive()) return;
       pushChat(entry, { sender: "Server", message: text, type: "server" });
     }
   });
@@ -1533,6 +1681,7 @@ function disconnectBot(id, suppressReconnect) {
   const entry = bots.get(id);
   if (!entry) return;
   clearReconnectTimer(entry);
+  clearBotTimers(entry);
   entry.reconnectAttempts = 0;
   if (entry.bot) {
     try { entry.bot.end(); } catch (_) {}
@@ -1582,6 +1731,7 @@ async function connectBridgeBot(id) {
 function disconnectBridgeBot(id) {
   const entry = bots.get(id);
   if (!entry) return;
+  clearBotTimers(entry);
   entry.connectedAt = null;
   entry.bridgePlayers = [];
   setBotState(entry, "disconnected");
@@ -1592,6 +1742,7 @@ function removeBot(id) {
   const entry = bots.get(id);
   if (!entry) return;
   clearReconnectTimer(entry);
+  clearBotTimers(entry);
   if (entry.bot) {
     try { entry.bot.end(); } catch (_) {}
   }
@@ -1607,6 +1758,7 @@ function removeBot(id) {
 setInterval(() => {
   for (const [id, entry] of bots) {
     if (entry.mode === "manual") continue;
+    if (!entry.autoReconnect) continue;
     if (entry.paused) continue;
 
     const wantOnline = shouldBeOnline(entry);
@@ -1638,7 +1790,7 @@ setInterval(() => {
 // ---------------------------------------------------------------------------
 io.on("connection", (socket) => {
   const payload = [];
-  for (const [, entry] of bots) payload.push(serializeBot(entry));
+  for (const [, entry] of bots) payload.push(serializeBot(entry, { includeLog: true }));
   socket.emit("init", {
     bots: payload, settings, version: APP_VERSION, activeSessionId,
     serverFavicon,
@@ -1653,7 +1805,7 @@ io.on("connection", (socket) => {
   socket.on("add_bot", (cfg) => {
     const entry = registerBot(cfg);
     saveBotConfigs();
-    io.emit("botAdded", serializeBot(entry));
+    io.emit("botAdded", serializeBot(entry, { includeLog: true }));
     emitGlobalStats();
   });
 
@@ -1726,7 +1878,7 @@ io.on("connection", (socket) => {
         if (clean.startsWith("/")) {
           pushChat(entry, { sender: entry.label, message: "Commands not supported via bridge", type: "error" });
         } else {
-          bridgeSendChat(clean);
+          bridgeSendChat(clean, entry.label || "MC Bot");
           pushChat(entry, { sender: entry.label, message: clean, type: "self" });
         }
       } else {
@@ -1788,10 +1940,12 @@ io.on("connection", (socket) => {
     if (!entry) return;
     const modes = ["off", "admin-afk", "support", "disguise"];
     const idx = modes.indexOf(entry.aiMode || "off");
+    const prev = entry.aiMode;
     entry.aiMode = modes[(idx + 1) % modes.length];
     saveBotConfigs();
     pushChat(entry, { sender: "System", message: `AI mode: ${entry.aiMode}`, type: "system" });
     io.emit("botUpdated", serializeBot(entry));
+    applyAfkModeTransition(entry, prev, entry.aiMode);
   });
 
   // --- Active session ---
@@ -1811,9 +1965,11 @@ io.on("connection", (socket) => {
       const validModes = ["off", "admin-afk", "support", "disguise"];
       if (!validModes.includes(value)) return;
     }
+    const prev = entry[field];
     entry[field] = value;
     saveBotConfigs();
     io.emit("botUpdated", serializeBot(entry));
+    if (field === "aiMode") applyAfkModeTransition(entry, prev, value);
   });
 
   // --- Session restart ---
@@ -1855,7 +2011,10 @@ async function callBridgeAPI(method, endpoint, body) {
 }
 
 async function bridgeSendChat(message, webhookName) {
-  const result = callBridgeAPI("POST", "/api/chat", { message: sanitizeMcChat(message) });
+  const result = await callBridgeAPI("POST", "/api/chat", { message: sanitizeMcChat(message) });
+  if (result && result.error) {
+    console.error(`[MC-Presence] Bridge /api/chat failed: ${result.error}`);
+  }
   sendDiscordWebhook(message, webhookName);
   return result;
 }
@@ -1863,13 +2022,14 @@ async function bridgeSendChat(message, webhookName) {
 async function sendDiscordWebhook(message, username) {
   const url = settings.bridge.discordWebhook;
   if (!url) return;
+  const name = username || "MC Bot";
   try {
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        username: username || "MC Presence",
-        avatar_url: `https://mc-heads.net/avatar/${encodeURIComponent(username || "MHF_Robot")}/128`,
+        username: name,
+        avatar_url: `https://mc-heads.net/avatar/${encodeURIComponent(name)}/128`,
         content: message,
       }),
     });
@@ -1966,9 +2126,17 @@ app.post("/api/plugin-event", (req, res) => {
 
   console.log(`[MC-Presence] Bridge event: ${event.type} - ${event.player || ""} | payload: ${JSON.stringify(event).slice(0, 200)}`);
 
-  // Route CobbleBridge events to ALL connected bots (not just bridge type).
-  // This lets mineflayer bots benefit from reliable join/leave/chat events
-  // when CobbleBridge is configured.
+  // CobbleBridge is the authoritative source for server events when available.
+  // Mark it so mineflayer bots can suppress their own duplicate server-broadcast parses.
+  bridgeActiveUntil = Date.now() + BRIDGE_ACTIVE_TTL_MS;
+
+  // First-time detection via bridge is reliable — mark once globally
+  if (event.type === "player_join" && event.firstTime === true && event.player) {
+    confirmedFirstTimers.add(event.player);
+    setTimeout(() => confirmedFirstTimers.delete(event.player), 30000);
+  }
+
+  // Route events to ALL connected bots with consistent formatting.
   let anyConnected = false;
   for (const [, entry] of bots) {
     if (entry.state !== "connected") continue;
@@ -1978,36 +2146,28 @@ app.post("/api/plugin-event", (req, res) => {
       case "player_join": {
         if (!isRealPlayer(event.player)) break;
         if (isAnyBotAccount(event.player)) break;
-        // Only push chat for bridge bots — mineflayer bots get join messages from bot.on("message")
+        const joinMsg = `${event.player} logged in${event.firstTime ? " (first time!)" : ""}`;
+        pushChat(entry, { sender: "Server", message: joinMsg, type: "join" });
         if (entry.botType === "bridge") {
-          pushChat(entry, { sender: "Server", message: `${event.player} joined${event.firstTime ? " (first time!)" : ""}`, type: "join" });
-          io.emit("players", { botId: entry.id, players: entry.bridgePlayers || [] });
           refreshBridgePlayers(entry);
         } else {
-          // For mineflayer bots, just refresh the player list to catch any missed tab list updates
           io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
-        }
-        // First-time detection via bridge is reliable — use for all bots
-        if (event.firstTime === true) {
-          confirmedFirstTimers.add(event.player);
-          setTimeout(() => confirmedFirstTimers.delete(event.player), 30000);
         }
         if (entry.aiMode !== "off") {
           const firstTime = event.firstTime === true;
           if (entry.botType === "bridge") {
             handleBridgePlayerJoin(entry, event.player, firstTime);
           }
-          // Mineflayer bots handle greetings via bot.on("playerJoined") already
+          // Mineflayer bots handle AI greetings via bot.on("playerJoined")
         }
         break;
       }
       case "player_quit": {
         if (!isRealPlayer(event.player)) break;
+        pushChat(entry, { sender: "Server", message: `${event.player} logged out`, type: "leave" });
         if (entry.botType === "bridge") {
-          pushChat(entry, { sender: "Server", message: `${event.player} left`, type: "leave" });
           refreshBridgePlayers(entry);
         } else {
-          // For mineflayer bots, refresh player list to catch stale entries
           io.emit("players", { botId: entry.id, players: getPlayerList(entry) });
         }
         break;
@@ -2031,16 +2191,12 @@ app.post("/api/plugin-event", (req, res) => {
       }
       case "player_advancement": {
         if (!isRealPlayer(event.player)) break;
-        if (entry.botType === "bridge") {
-          pushChat(entry, { sender: "Server", message: `${event.player} earned: ${event.advancement}`, type: "server" });
-        }
+        pushChat(entry, { sender: "Server", message: `${event.player} earned: ${event.advancement}`, type: "server" });
         break;
       }
       case "player_death": {
         if (!isRealPlayer(event.player)) break;
-        if (entry.botType === "bridge") {
-          pushChat(entry, { sender: "Server", message: event.message, type: "server" });
-        }
+        pushChat(entry, { sender: "Server", message: event.message, type: "server" });
         break;
       }
     }
@@ -2053,6 +2209,14 @@ app.post("/api/plugin-event", (req, res) => {
   res.json({ ok: true });
 });
 
+// Track whether CobbleBridge is actively delivering events — when true, mineflayer
+// bots suppress their own server-broadcast parse to avoid duplicate join/leave/death logs.
+let bridgeActiveUntil = 0;
+const BRIDGE_ACTIVE_TTL_MS = 5 * 60 * 1000; // 5 min
+function isBridgeActive() {
+  return Date.now() < bridgeActiveUntil;
+}
+
 async function refreshBridgePlayers(entry) {
   try {
     const players = await callBridgeAPI("GET", "/api/players");
@@ -2062,18 +2226,15 @@ async function refreshBridgePlayers(entry) {
         .map(p => ({ username: p.name, uuid: p.uuid, ping: 0 }));
       io.emit("players", { botId: entry.id, players: entry.bridgePlayers });
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error(`[MC-Presence] [${entry.label}] refreshBridgePlayers failed:`, err.message);
+  }
 }
 
 async function handleBridgePlayerJoin(entry, playerName, firstTime) {
   if (!settings.aiEnabled) return;
-  // Bulletproof self/bot check
   if (isAnyBotAccount(playerName)) return;
-
-  // 5-minute rejoin cooldown
   if (hasRecentRejoin(playerName)) return;
-
-  // 30-second dedup
   if (hasRecentGreeting(entry.id, playerName)) return;
 
   const delay = entry.aiMode === "support"
@@ -2083,42 +2244,17 @@ async function handleBridgePlayerJoin(entry, playerName, firstTime) {
   if (entry.state !== "connected") return;
   if (hasRecentGreeting(entry.id, playerName)) return;
 
+  // If bridge didn't flag firstTime, fall back to file-age / global known-player check
+  if (!firstTime) firstTime = await resolveFirstTime(playerName);
+  markPlayerKnown(playerName);
+
   const botName = entry.bot?.username || entry.label;
   console.log(`[MC-Presence] [${entry.label}] Bridge join greeting: player=${playerName} firstTime=${firstTime}`);
 
-  let msg;
-  if (entry.aiMode === "admin-afk") {
-    if (firstTime) {
-      msg = `Hey ${playerName}, welcome! I'm AFK right now - feel free to ask for help in chat`;
-    } else {
-      msg = "wb";
-    }
-  } else if (entry.aiMode === "support") {
-    if (firstTime) {
-      msg = `Welcome to the server, ${playerName}! I'm ${botName}, the AI support bot. Type @${botName} followed by your question anytime!`;
-    }
-    // Support bot does NOT say "wb" for returning players
-  } else if (entry.aiMode === "disguise") {
-    if (firstTime) {
-      const welcomes = ["welcome", "welcome!", "yo welcome", "welcome!!", "hey welcome"];
-      msg = welcomes[Math.floor(Math.random() * welcomes.length)];
-    } else {
-      msg = "wb";
-    }
-  }
-
+  const msg = buildGreetingMessage(entry.aiMode, playerName, botName, firstTime);
   if (!msg) return;
 
-  const sent = sendBotMessage(entry, msg);
-  if (sent) {
-    markGreeting(entry.id, playerName);
-    markPlayerGreeted(playerName);
-    setCooldown(entry.id, playerName);
-    if (entry.aiMode === "disguise" && msg === "wb") {
-      registerWbWatcher(entry.id, playerName);
-    }
-    console.log(`[MC-Presence] [${entry.label}] Bridge greeting -> ${playerName}: ${msg}`);
-  }
+  if (sendBotMessage(entry, msg)) afterGreetingSent(entry, playerName, msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -2158,11 +2294,19 @@ setInterval(() => {
     if (entry.state !== "connected") continue;
     if (!entry.antiAfk) continue;
     if (entry.botType !== "mineflayer" || !entry.bot) continue;
+    // Respect admin-afk mode — if the bot is intentionally /afk'd, don't move it out.
+    if (entry.aiMode === "admin-afk") continue;
     try {
-      // Small random look movement
-      const yaw = (entry.bot.entity?.yaw || 0) + (Math.random() - 0.5) * 0.5;
-      const pitch = entry.bot.entity?.pitch || 0;
-      entry.bot.look(yaw, pitch, false);
+      const bot = entry.bot;
+      // 1. Random camera rotation
+      const yaw = (bot.entity?.yaw || 0) + (Math.random() - 0.5) * 0.6;
+      const pitch = (bot.entity?.pitch || 0) + (Math.random() - 0.5) * 0.2;
+      bot.look(yaw, pitch, false);
+      // 2. Swing main arm — registers as activity to most AFK plugins
+      bot.swingArm?.("right");
+      // 3. Brief sneak pulse — real movement packet, clears CMI AFK
+      bot.setControlState?.("sneak", true);
+      setTimeout(() => { try { bot.setControlState?.("sneak", false); } catch (_) {} }, 250);
     } catch (_) {}
   }
 }, 45000);
@@ -2172,7 +2316,7 @@ setInterval(() => {
 // ---------------------------------------------------------------------------
 app.get("/api/status", (_req, res) => {
   const payload = [];
-  for (const [, entry] of bots) payload.push(serializeBot(entry));
+  for (const [, entry] of bots) payload.push(serializeBot(entry, { includeLog: true }));
   res.json({ bots: payload, settings, version: APP_VERSION });
 });
 
