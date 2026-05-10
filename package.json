@@ -1,6 +1,6 @@
 {
   "name": "mc-presence",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "Multi-account headless Minecraft presence bot with AI chat and real-time web dashboard",
   "main": "server.js",
   "scripts": {
@@ -10,7 +10,8 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
-    "mineflayer": "^4.35.0",
+    "minecraft-data": "^3.110.0",
+    "mineflayer": "^4.37.1",
     "socket.io": "^4.7.5"
   }
 }

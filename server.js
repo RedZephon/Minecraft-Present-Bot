@@ -8,7 +8,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.5";
+const APP_VERSION = "2.0.6";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -720,9 +720,9 @@ function sendBotMessage(entry, message, opts = {}) {
   }
 
   // Webhook display name: always the bot's MC username (falling back to the
-  // session label). We deliberately do NOT use assistantName for Discord so the
-  // source bot is always identifiable — assistantName is only used internally
-  // as an AI persona label.
+  // session label). Only used for bridge (virtual) bots — real mineflayer
+  // accounts produce real in-game chat that the server-side Discord<->MC
+  // bridge already mirrors, so posting a webhook for those would double-post.
   const webhookName = entry.bot?.username || entry.label || "MC Bot";
 
   try {
@@ -731,10 +731,7 @@ function sendBotMessage(entry, message, opts = {}) {
       else bridgeSendChat(clean, webhookName);
     } else if (entry.bot) {
       if (opts.whisperTo) entry.bot.chat(`/msg ${opts.whisperTo} ${clean}`);
-      else {
-        entry.bot.chat(clean);
-        sendDiscordWebhook(clean, webhookName);
-      }
+      else entry.bot.chat(clean);
     } else {
       return false;
     }
@@ -1473,8 +1470,8 @@ async function connectBot(id, isReconnect) {
       }
 
       if (pingResult && pingResult.version && pingResult.version.name) {
-        // Version name might be something like "1.21.4" or "Paper 1.21.4"
-        // Extract the numeric version
+        // Version name might be "1.21.4", "Paper 1.21.4", or — under the new
+        // Mojang scheme — "26.1.2" / "Paper 26.1.2". Extract the numeric part.
         const vMatch = pingResult.version.name.match(/(\d+\.\d+(?:\.\d+)?)/);
         if (vMatch) {
           resolvedVersion = vMatch[1];

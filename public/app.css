@@ -924,6 +924,42 @@ div.message-avatar {
 .toggle.on { background: var(--accent); }
 .toggle.on::after { left: 16px; }
 
+/* Editable form fields in the details panel (right sidebar). */
+.details-section .field { margin-bottom: 12px; }
+.details-section .field:last-child { margin-bottom: 0; }
+.details-section .field label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+}
+.details-section .field input[type="text"],
+.details-section .field input[type="time"],
+.details-section .field input[type="number"],
+.details-section .field select {
+  width: 100%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.details-section .field input:focus,
+.details-section .field select:focus { border-color: var(--accent); }
+.details-section .field select { appearance: none; cursor: pointer; }
+.details-section .field input:disabled,
+.details-section .field select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* Assistant name input in behavior section */
 .assistant-name-input {
   width: 100%;

@@ -15,9 +15,9 @@ const state = {
   theme: document.documentElement.getAttribute('data-theme') || 'dark',
 };
 
-let editingBotId = null;
 let confirmCallback = null;
 let uptimeInterval = null;
+let pendingNewSessionSelect = false;
 
 // ─────────── Helpers ───────────
 const $ = (id) => document.getElementById(id);
@@ -112,7 +112,15 @@ socket.on('init', (data) => {
 
 socket.on('botAdded', (bot) => {
   state.bots[bot.id] = bot;
+  if (pendingNewSessionSelect) {
+    pendingNewSessionSelect = false;
+    state.activeSessionId = bot.id;
+    state.detailsOpen = true;
+    $('workspace').classList.remove('details-hidden');
+  }
   renderSidebar();
+  renderChatHeader();
+  renderDetails();
   updateServerCard();
 });
 
@@ -238,7 +246,7 @@ function renderSidebar() {
         <div class="empty-icon"><i class="fa-solid fa-cube"></i></div>
         <h3>No sessions yet</h3>
         <p>Add your first Minecraft session to get started.</p>
-        <button class="btn primary" onclick="openAddModal()">
+        <button class="btn primary" onclick="createNewSession()">
           <i class="fa-solid fa-plus"></i> Add Session
         </button>
       </div>
@@ -599,33 +607,132 @@ function renderDetails() {
     return;
   }
 
+  // Capture focus + selection + in-progress value of any input in the panel
+  // so a re-render (triggered by botUpdated/botState) doesn't wipe what the
+  // user is currently editing.
+  const focused = document.activeElement;
+  let focusKey = null, selStart = null, selEnd = null, focusValue = null;
+  if (focused && content.contains(focused) && focused.dataset && focused.dataset.field) {
+    focusKey = focused.dataset.field;
+    if (typeof focused.selectionStart === 'number') {
+      selStart = focused.selectionStart;
+      selEnd = focused.selectionEnd;
+    }
+    if ('value' in focused && focused.tagName !== 'SELECT') focusValue = focused.value;
+  }
+
   const mcName = bot.connectedUsername || bot.label;
   const isConnected = bot.state === 'connected';
+  const isConnecting = bot.state === 'connecting';
+  const isDisconnected = bot.state === 'disconnected';
+  const isMineflayer = (bot.botType || 'mineflayer') === 'mineflayer';
   const metrics = state.metrics[bot.id] || {};
   const uptime = metrics.uptime || (bot.connectedAt ? Date.now() - bot.connectedAt : 0);
+  const aiEnabled = state.settings.aiEnabled !== false;
+  // Connection params are locked while connected/connecting — server-side
+  // update_bot only applies them when state === "disconnected".
+  const lockedAttr = isDisconnected ? '' : 'disabled';
+  const lockedNote = isDisconnected ? '' : '<div class="field-note">Disconnect the session to edit connection settings.</div>';
 
   content.innerHTML = `
     <div class="details-section">
-      <h4>Account</h4>
-      <div class="info-grid">
-        <div class="info-row"><span class="label">Username</span><span class="value">${esc(mcName)}</span></div>
-        <div class="info-row"><span class="label">Email</span><span class="value">${esc(bot.username || '--')}</span></div>
-        <div class="info-row"><span class="label">Auth</span><span class="value">${esc(bot.auth || 'microsoft')}</span></div>
-        <div class="info-row"><span class="label">Version</span><span class="value">${esc(bot.version || bot.detectedVersion || 'auto')}</span></div>
+      <h4>Identity</h4>
+      <div class="field">
+        <label>Label</label>
+        <input type="text" data-field="label" value="${esc(bot.label || '')}"
+          onchange="updateSessionField('${bot.id}', 'label', this.value.trim())"
+          placeholder="Display name" />
+      </div>
+      <div class="field">
+        <label>Bot Type</label>
+        <select data-field="botType" ${lockedAttr}
+          onchange="updateSessionField('${bot.id}', 'botType', this.value)">
+          <option value="mineflayer" ${isMineflayer ? 'selected' : ''}>Minecraft Account (Mineflayer)</option>
+          <option value="bridge" ${!isMineflayer ? 'selected' : ''}>Virtual Player (CobbleBridge)</option>
+        </select>
+        <div class="field-note">${isMineflayer ? 'Connects using a real Minecraft account.' : 'Virtual player via CobbleBridge plugin. No MC account needed.'}</div>
       </div>
     </div>
+
+    ${isMineflayer ? `
+    <div class="details-section">
+      <h4>Server</h4>
+      <div class="field">
+        <label>Microsoft Email</label>
+        <input type="text" data-field="username" value="${esc(bot.username || '')}" ${lockedAttr}
+          onchange="updateSessionField('${bot.id}', 'username', this.value.trim())"
+          placeholder="email@outlook.com" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Host</label>
+          <input type="text" data-field="host" value="${esc(bot.host || '')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'host', this.value.trim())"
+            placeholder="play.example.net" />
+        </div>
+        <div class="field">
+          <label>Port</label>
+          <input type="text" data-field="port" value="${esc(String(bot.port || 25565))}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'port', this.value.trim() || '25565')" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Auth Type</label>
+          <input type="text" data-field="auth" value="${esc(bot.auth || 'microsoft')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'auth', this.value.trim() || 'microsoft')" />
+        </div>
+        <div class="field">
+          <label>Version</label>
+          <input type="text" data-field="version" value="${esc(bot.version || '')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'version', this.value.trim())"
+            placeholder="${esc(bot.detectedVersion || 'auto-detect')}" />
+        </div>
+      </div>
+      ${lockedNote}
+    </div>
+    ` : ''}
 
     <div class="details-section">
       <h4>Connection</h4>
       <div class="info-grid">
         <div class="info-row">
           <span class="label">Status</span>
-          <span class="value ${isConnected ? 'success' : ''}">${isConnected ? '\u25CF Connected' : bot.state === 'connecting' ? '\u25CF Connecting' : '\u25CB Disconnected'}</span>
+          <span class="value ${isConnected ? 'success' : ''}">${isConnected ? '\u25CF Connected' : isConnecting ? '\u25CF Connecting' : '\u25CB Disconnected'}</span>
         </div>
         <div class="info-row"><span class="label">Uptime</span><span class="value" id="detailUptime">${isConnected ? formatUptimeFull(uptime) : '--'}</span></div>
         <div class="info-row"><span class="label">Latency</span><span class="value" id="detailLatency">${metrics.latency ? metrics.latency + 'ms' : '--'}</span></div>
-        <div class="info-row"><span class="label">Server</span><span class="value">${esc(bot.host + ':' + bot.port)}</span></div>
+        ${isMineflayer ? `<div class="info-row"><span class="label">MC Username</span><span class="value">${esc(mcName)}</span></div>` : ''}
+        ${bot.detectedVersion ? `<div class="info-row"><span class="label">Detected</span><span class="value">${esc(bot.detectedVersion)}</span></div>` : ''}
       </div>
+    </div>
+
+    <div class="details-section">
+      <h4>Schedule</h4>
+      <div class="field">
+        <label>Mode</label>
+        <select data-field="mode" onchange="updateSessionField('${bot.id}', 'mode', this.value)">
+          <option value="manual" ${bot.mode === 'manual' ? 'selected' : ''}>Manual</option>
+          <option value="permanent" ${bot.mode === 'permanent' ? 'selected' : ''}>Permanent (always online)</option>
+          <option value="scheduled" ${bot.mode === 'scheduled' ? 'selected' : ''}>Scheduled</option>
+        </select>
+        <div class="field-note">${bot.mode === 'manual' ? 'You control connect/disconnect manually.' : bot.mode === 'permanent' ? 'Auto-connects and reconnects on disconnect.' : 'Connects and disconnects at the times below.'}</div>
+      </div>
+      ${bot.mode === 'scheduled' ? `
+      <div class="field-row">
+        <div class="field">
+          <label>Connect At</label>
+          <input type="time" data-field="scheduleStart" value="${esc(bot.schedule?.start || '00:00')}"
+            onchange="updateScheduleField('${bot.id}', 'start', this.value)" />
+        </div>
+        <div class="field">
+          <label>Disconnect At</label>
+          <input type="time" data-field="scheduleEnd" value="${esc(bot.schedule?.end || '08:00')}"
+            onchange="updateScheduleField('${bot.id}', 'end', this.value)" />
+        </div>
+      </div>
+      <div class="field-note">Uses 24-hour time. Wraps midnight.</div>
+      ` : ''}
     </div>
 
     <div class="details-section">
@@ -644,7 +751,7 @@ function renderDetails() {
         </div>
         <div class="toggle ${bot.antiAfk ? 'on' : ''}" data-field="antiAfk" onclick="toggleBehavior('${bot.id}', 'antiAfk', this)"></div>
       </div>
-      ${state.settings.aiEnabled !== false ? `<div style="padding-top:12px;border-top:1px solid var(--border);">
+      ${aiEnabled ? `<div style="padding-top:12px;border-top:1px solid var(--border);">
         <label style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;display:block;">AI Mode</label>
         <div class="ai-mode-selector" style="display:flex;flex-direction:column;gap:4px;">
           <label class="ai-mode-option" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius-sm);cursor:pointer;transition:background 0.15s;${bot.aiMode === 'off' ? 'background:var(--bg-elev-2);' : ''}" onclick="setAiMode('${bot.id}', 'off')">
@@ -680,7 +787,7 @@ function renderDetails() {
       ${bot.aiMode === 'support' ? `
       <div style="padding-top:10px;">
         <label style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.08em;">Assistant Name</label>
-        <input class="assistant-name-input" type="text" value="${esc(bot.assistantName || 'Assistant')}"
+        <input class="assistant-name-input" type="text" data-field="assistantName" value="${esc(bot.assistantName || 'Assistant')}"
           onchange="updateAssistantName('${bot.id}', this.value)" placeholder="Assistant" />
       </div>
       ` : ''}` : ''}
@@ -689,12 +796,69 @@ function renderDetails() {
     <div class="details-section">
       <h4>Manage</h4>
       <div class="danger-zone">
-        <button class="btn" onclick="openEditModal('${bot.id}')"><i class="fa-solid fa-pen-to-square"></i> Edit Session</button>
-        <button class="btn danger" onclick="doRestart('${bot.id}')"><i class="fa-solid fa-rotate-right"></i> Restart Session</button>
+        <button class="btn" onclick="doRestart('${bot.id}')"><i class="fa-solid fa-rotate-right"></i> Restart Session</button>
         <button class="btn danger" onclick="confirmRemove('${bot.id}')"><i class="fa-solid fa-trash"></i> Remove Session</button>
       </div>
     </div>
   `;
+
+  // Restore focus + cursor + in-progress value if the user was mid-edit.
+  if (focusKey) {
+    const el = content.querySelector(`[data-field="${focusKey}"]`);
+    if (el) {
+      if (focusValue !== null && 'value' in el && el.tagName !== 'SELECT') {
+        el.value = focusValue;
+      }
+      el.focus();
+      if (selStart !== null && typeof el.setSelectionRange === 'function') {
+        try { el.setSelectionRange(selStart, selEnd); } catch (_) {}
+      }
+    }
+  }
+}
+
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Session field updates (inline in details panel) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function updateSessionField(id, field, value) {
+  const bot = state.bots[id];
+  if (!bot) return;
+  if (field === 'port') {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n <= 0) { showToast('Invalid port', 'warn'); return; }
+    value = n;
+  }
+  // Optimistic local update so dependent UI (bot-type fields, mode hint,
+  // scheduled time inputs) renders immediately without waiting for the
+  // server round-trip. The canonical server value arrives via botUpdated.
+  bot[field] = value;
+  socket.emit('update_bot', { id, [field]: value });
+  renderDetails();
+  renderSidebar();
+}
+
+function updateScheduleField(id, key, value) {
+  const bot = state.bots[id];
+  if (!bot) return;
+  const schedule = { ...(bot.schedule || { start: '00:00', end: '08:00' }) };
+  schedule[key] = value;
+  bot.schedule = schedule;
+  socket.emit('update_bot', { id, schedule });
+}
+
+function createNewSession() {
+  const defaults = {
+    label: 'New Session',
+    botType: 'mineflayer',
+    username: '',
+    host: state.settings.defaultHost || 'play.example.net',
+    port: state.settings.defaultPort || '25565',
+    auth: 'microsoft',
+    version: '',
+    mode: 'manual',
+    aiMode: 'off',
+    schedule: { start: '00:00', end: '08:00' },
+  };
+  pendingNewSessionSelect = true;
+  socket.emit('add_bot', defaults);
 }
 
 function toggleBehavior(id, field, el) {
@@ -916,119 +1080,7 @@ $('confirmModalOverlay').addEventListener('click', (e) => {
   }
 });
 
-// ─────────── Session Modal ───────────
-function openAddModal() {
-  editingBotId = null;
-  $('sessionModalTitle').textContent = 'Add Session';
-  $('fBotType').value = 'mineflayer';
-  $('fLabel').value = '';
-  $('fUsername').value = '';
-  $('fHost').value = state.settings.defaultHost || 'play.example.net';
-  $('fPort').value = state.settings.defaultPort || '25565';
-  $('fAuth').value = 'microsoft';
-  $('fVersion').value = '';
-  $('fMode').value = 'manual';
-  $('fAiMode').value = 'off';
-  $('fSchedStart').value = '00:00';
-  $('fSchedEnd').value = '08:00';
-  updateBotTypeUI();
-  updateModeUI();
-  updateAiModeUI();
-  $('sessionModalOverlay').classList.add('visible');
-}
-
-function openEditModal(id) {
-  const bot = state.bots[id];
-  if (!bot) return;
-  editingBotId = id;
-  $('sessionModalTitle').textContent = 'Edit Session';
-  $('fBotType').value = bot.botType || 'mineflayer';
-  $('fLabel').value = bot.label;
-  $('fUsername').value = bot.username || '';
-  $('fHost').value = bot.host;
-  $('fPort').value = bot.port;
-  $('fAuth').value = bot.auth;
-  $('fVersion').value = bot.version || '';
-  $('fMode').value = bot.mode;
-  $('fAiMode').value = bot.aiMode || 'off';
-  $('fSchedStart').value = bot.schedule?.start || '00:00';
-  $('fSchedEnd').value = bot.schedule?.end || '08:00';
-  updateBotTypeUI();
-  updateModeUI();
-  updateAiModeUI();
-  $('sessionModalOverlay').classList.add('visible');
-}
-
-function closeSessionModal() {
-  $('sessionModalOverlay').classList.remove('visible');
-  editingBotId = null;
-}
-
-function saveSessionModal() {
-  const botType = $('fBotType').value;
-  const cfg = {
-    label: $('fLabel').value.trim(),
-    botType,
-    mode: $('fMode').value,
-    aiMode: $('fAiMode').value,
-    schedule: { start: $('fSchedStart').value, end: $('fSchedEnd').value },
-  };
-
-  if (botType === 'mineflayer') {
-    cfg.username = $('fUsername').value.trim();
-    cfg.host = $('fHost').value.trim() || 'play.example.net';
-    cfg.port = $('fPort').value.trim() || '25565';
-    cfg.auth = $('fAuth').value.trim() || 'microsoft';
-    cfg.version = $('fVersion').value.trim();
-    if (!cfg.username) { showToast('Email is required', 'warn'); return; }
-    if (!cfg.label) cfg.label = cfg.username;
-  } else {
-    if (!cfg.label) { showToast('Label is required', 'warn'); return; }
-    cfg.username = '';
-    cfg.host = state.settings.defaultHost || '';
-    cfg.port = state.settings.defaultPort || 25565;
-    cfg.auth = '';
-    cfg.version = '';
-  }
-
-  if (editingBotId) {
-    socket.emit('update_bot', { id: editingBotId, ...cfg });
-  } else {
-    socket.emit('add_bot', cfg);
-  }
-  closeSessionModal();
-}
-
-function updateBotTypeUI() {
-  const type = $('fBotType').value;
-  $('mineflayerFields').style.display = type === 'mineflayer' ? 'block' : 'none';
-  $('fBotTypeNote').textContent = type === 'mineflayer'
-    ? 'Connects using a real Minecraft account.'
-    : 'Virtual player via CobbleBridge plugin. No MC account needed.';
-}
-
-function updateModeUI() {
-  const mode = $('fMode').value;
-  $('scheduleFields').style.display = mode === 'scheduled' ? 'block' : 'none';
-  const notes = { manual: 'You control connect/disconnect manually.', permanent: 'Auto-connects and reconnects on disconnect.', scheduled: 'Connects and disconnects at the times below.' };
-  $('fModeNote').textContent = notes[mode] || '';
-}
-
-function updateAiModeUI() {
-  const mode = $('fAiMode').value;
-  const notes = { off: 'No AI responses.', 'admin-afk': 'Tells players you\'re AFK.', support: 'Answers server questions via @mention.', disguise: 'Acts as a casual player.' };
-  $('fAiModeNote').textContent = notes[mode] || '';
-}
-
-$('fBotType').addEventListener('change', updateBotTypeUI);
-$('fMode').addEventListener('change', updateModeUI);
-$('fAiMode').addEventListener('change', updateAiModeUI);
-$('btnAddSession').addEventListener('click', openAddModal);
-$('btnSessionCancel').addEventListener('click', closeSessionModal);
-$('btnSessionSave').addEventListener('click', saveSessionModal);
-$('sessionModalOverlay').addEventListener('click', (e) => {
-  if (e.target === $('sessionModalOverlay')) closeSessionModal();
-});
+$('btnAddSession').addEventListener('click', createNewSession);
 
 // ─────────── Settings Modal ───────────
 function updateAiSettingsVisibility() {
@@ -1146,7 +1198,7 @@ const COMMANDS = [
   { label: 'Disconnect all', icon: 'fa-solid fa-power-off', hint: '', action: () => { socket.emit('disconnect_all'); showToast('Disconnecting all...'); } },
   { label: 'Restart active session', icon: 'fa-solid fa-rotate-right', hint: '', action: () => { if (state.activeSessionId) doRestart(state.activeSessionId); } },
   { label: 'Settings', icon: 'fa-solid fa-gear', hint: '', action: openSettingsModal },
-  { label: 'Add session', icon: 'fa-solid fa-plus', hint: '', action: openAddModal },
+  { label: 'Add session', icon: 'fa-solid fa-plus', hint: '', action: createNewSession },
 ];
 
 function getCommandList() {

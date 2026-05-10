@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.0.6
+
+### Fixes
+- **No more double Discord posts for real-account bots** — `sendBotMessage` used to push to the Discord webhook for every send, including from authenticated mineflayer sessions. Those sessions already produce real in-game chat that the server-side Discord<->MC bridge mirrors, so every message landed in Discord twice. The webhook call is now bridge-only (CobbleBot AI and other virtual bots whose chat doesn't reliably round-trip through the MC bridge).
+
+### UI
+- **Session settings folded into the right sidebar** — the Add/Edit Session modal is gone. Every per-session field (label, bot type, email, host/port, auth, version, mode, schedule, AI mode, assistant name, toggles) now lives in the details panel and auto-saves on change. New sessions are created with sensible defaults via "+" and customized inline. Connection fields disable while connected/connecting (server already enforced this; the UI now reflects it). Removes the duplicate AI-mode picker (modal + sidebar) that could overwrite each other when both were active.
+- **Focus-preserving re-render** — typing into a sidebar input no longer gets wiped if a server-side `botUpdated`/`botState` event arrives mid-edit. Focus, cursor position, selection, and any unsaved value are restored on re-render.
+
+### Compatibility
+- **Minecraft Java Edition 26.1.2 (protocol 775) supported** — bumped `mineflayer` to `^4.37.1` (was `^4.35.0`). Pulls in the matching `minecraft-data` / `minecraft-protocol` updates that recognize the new Mojang versioning scheme. The auto-detect regex in `connectMineflayer` already extracts `26.1.2`-style names from server pings.
+
 ## v2.0.5
 
 ### Fixes
