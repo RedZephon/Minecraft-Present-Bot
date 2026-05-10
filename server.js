@@ -44,7 +44,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.8";
+const APP_VERSION = "2.0.9";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames

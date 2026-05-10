@@ -154,6 +154,20 @@ socket.on('init', (data) => {
   state.bots = {};
   for (const bot of data.bots) state.bots[bot.id] = bot;
 
+  // One-time migration: any bot with an empty schedule.tz falls back server-
+  // side to the container's system clock (often UTC), which breaks user-
+  // wall-clock schedules silently. Stamp the browser's resolved timezone
+  // onto those schedules so the server evaluates the window in the right tz.
+  // Safe to run on every init — it only fires when tz is actually missing.
+  const browserTz = getBrowserTimezone();
+  for (const bot of Object.values(state.bots)) {
+    if (bot.schedule && !bot.schedule.tz) {
+      const schedule = { ...bot.schedule, tz: browserTz };
+      bot.schedule = schedule;
+      socket.emit('update_bot', { id: bot.id, schedule });
+    }
+  }
+
   // Auto-select first connected if no active
   if (!state.activeSessionId) {
     const connected = getConnectedBots();
@@ -870,9 +884,10 @@ function renderDetails() {
       <div class="field">
         <label>Timezone</label>
         <input type="text" list="tzList" data-field="scheduleTz"
-          value="${esc(bot.schedule?.tz || getBrowserTimezone())}"
+          value="${esc(bot.schedule?.tz || '')}"
           placeholder="${esc(getBrowserTimezone())}"
           onchange="updateScheduleField('${bot.id}', 'tz', this.value.trim() || getBrowserTimezone())" />
+        ${bot.schedule?.tz ? '' : '<div class="field-note">Empty — schedule will use the server\'s system clock until set.</div>'}
       </div>
       <div class="field-note">Times in your local 12-hour format. Schedule wraps midnight.</div>
       ` : ''}
@@ -1035,7 +1050,7 @@ function createNewSession() {
     version: '',
     mode: 'manual',
     aiMode: 'off',
-    schedule: { start: '00:00', end: '08:00' },
+    schedule: { start: '00:00', end: '08:00', tz: getBrowserTimezone() },
   };
   pendingNewSessionSelect = true;
   socket.emit('add_bot', defaults);

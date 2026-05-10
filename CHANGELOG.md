@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.9
+
+### Fixes
+- **Schedules without a `tz` field now auto-migrate to the browser's timezone** — v2.0.8 added the timezone-aware scheduler but the Setup tab was rendering the browser's tz as a *display fallback* when the saved `schedule.tz` was empty. That made the field look configured (e.g. "America/Edmonton") while the server was silently still evaluating the window against its own system clock (UTC in a typical Unraid container) — disconnecting bots hours before the user expected. Symptom: schedule "09:00–22:00 America/Edmonton" disconnecting at 5:05 PM local because 5:05 PM Edmonton = 11:05 PM UTC > 22:00. On socket init, any bot whose `schedule.tz` is empty now gets stamped with the browser-resolved tz and persisted. New sessions created via `createNewSession` also include the browser tz from the start. The Timezone input now shows the actual saved value (with a clear "Empty — schedule will use the server's system clock until set." note if it really is empty).
+
 ## v2.0.8
 
 ### Features
