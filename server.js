@@ -44,7 +44,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.7";
+const APP_VERSION = "2.0.8";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -250,6 +250,29 @@ function nowMinutes() {
   return now.getHours() * 60 + now.getMinutes();
 }
 
+// Current minute-of-day in a given IANA timezone (e.g. "America/Vancouver").
+// Falls back to system time if tz is missing or unrecognized.
+function nowMinutesInTZ(tz) {
+  if (!tz) return nowMinutes();
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    let h = 0, m = 0;
+    for (const p of parts) {
+      if (p.type === "hour") h = parseInt(p.value, 10);
+      else if (p.type === "minute") m = parseInt(p.value, 10);
+    }
+    if (h === 24) h = 0; // Intl returns 24 for midnight in some locales
+    return h * 60 + m;
+  } catch (_) {
+    return nowMinutes();
+  }
+}
+
 function parseHHMM(str) {
   if (!str || typeof str !== "string") return null;
   const [h, m] = str.split(":").map(Number);
@@ -284,7 +307,8 @@ function minutesUntilEndOf(endStr) {
 function shouldBeOnline(entry) {
   if (entry.mode === "permanent") return true;
   if (entry.mode === "scheduled") {
-    return isInTimeRange(nowMinutes(), entry.schedule.start, entry.schedule.end);
+    const tz = entry.schedule?.tz || null;
+    return isInTimeRange(nowMinutesInTZ(tz), entry.schedule.start, entry.schedule.end);
   }
   return false; // manual mode — user controls it
 }
@@ -1558,7 +1582,7 @@ function registerBot(cfg) {
     autoReconnect: cfg.autoReconnect !== undefined ? cfg.autoReconnect : true,
     antiAfk: cfg.antiAfk !== undefined ? cfg.antiAfk : true,
     assistantName: cfg.assistantName || "Assistant",
-    schedule: cfg.schedule || { start: "00:00", end: "08:00" },
+    schedule: cfg.schedule || { start: "00:00", end: "08:00", tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
     // Random "breaks from playing" — periodically rolls a chance to disconnect
     // for a random duration (simulates a human stepping away). Works alongside
     // the schedule: a break that would end outside the scheduled window stays

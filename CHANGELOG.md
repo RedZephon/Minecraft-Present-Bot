@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.0.8
+
+### Features
+- **Timezone-aware scheduler** — per-session IANA timezone field under **Setup > Schedule**. The connect/disconnect window is now evaluated against the chosen timezone instead of the server's local clock, so a bot running in a UTC container can still hold to a `09:00–17:00 America/Vancouver` schedule. Field is a searchable input backed by the full `Intl.supportedValuesOf('timeZone')` list (~430 zones), defaulting to the browser's detected timezone. Existing schedules without a `tz` field continue to use the server's system TZ.
+
+### UI
+- **Fixed misleading "24-hour time" note** — the `<input type="time">` renders in 12-hour with AM/PM on locales like en-US, so the helper text was contradicting itself. Note now reads "Times in your local 12-hour format. Schedule wraps midnight." The underlying value is still `HH:MM` (per the HTML spec) — no migration needed.
+
 ## v2.0.7
 
 ### Features

@@ -56,6 +56,44 @@ function formatRelativeAgo(ts) {
   return `${d}d ago`;
 }
 
+// IANA timezone helpers — used by the schedule field. `supportedValuesOf` is
+// the comprehensive list (~430 entries, Node/Chrome/Firefox/Safari ≥ 2022);
+// the fallback list covers the common ones for older runtimes.
+function getBrowserTimezone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+  catch (_) { return 'UTC'; }
+}
+
+function getTimezoneList() {
+  try {
+    if (typeof Intl.supportedValuesOf === 'function') {
+      return Intl.supportedValuesOf('timeZone');
+    }
+  } catch (_) {}
+  return [
+    'UTC', 'America/New_York', 'America/Chicago', 'America/Denver',
+    'America/Los_Angeles', 'America/Vancouver', 'America/Toronto',
+    'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'Europe/Madrid',
+    'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Asia/Kolkata',
+    'Australia/Sydney', 'Pacific/Auckland',
+  ];
+}
+
+// Build the IANA timezone <datalist> once on app load so all per-session
+// schedule inputs can share it (avoids regenerating ~430 <option> elements
+// inside renderDetails on every re-render).
+(function buildTimezoneDatalist() {
+  if (document.getElementById('tzList')) return;
+  const dl = document.createElement('datalist');
+  dl.id = 'tzList';
+  for (const tz of getTimezoneList()) {
+    const opt = document.createElement('option');
+    opt.value = tz;
+    dl.appendChild(opt);
+  }
+  document.body.appendChild(dl);
+})();
+
 function showToast(msg, level) {
   const t = $('toast');
   t.textContent = msg;
@@ -829,7 +867,14 @@ function renderDetails() {
             onchange="updateScheduleField('${bot.id}', 'end', this.value)" />
         </div>
       </div>
-      <div class="field-note">Uses 24-hour time. Wraps midnight.</div>
+      <div class="field">
+        <label>Timezone</label>
+        <input type="text" list="tzList" data-field="scheduleTz"
+          value="${esc(bot.schedule?.tz || getBrowserTimezone())}"
+          placeholder="${esc(getBrowserTimezone())}"
+          onchange="updateScheduleField('${bot.id}', 'tz', this.value.trim() || getBrowserTimezone())" />
+      </div>
+      <div class="field-note">Times in your local 12-hour format. Schedule wraps midnight.</div>
       ` : ''}
     </div>
 
