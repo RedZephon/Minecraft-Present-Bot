@@ -1,4 +1,40 @@
 require("dotenv").config();
+
+// --- minecraft-data shim for the new Mojang versioning scheme (26.X.Y) ---
+// Mineflayer 4.37.1 / minecraft-data 3.110.0 don't yet ship the per-version
+// data directory or a dataPaths.json entry for Java Edition 26.1.x. A direct
+// lookup returns null and minecraft-protocol throws "unsupported protocol
+// version: 26.1.2" before we can connect.
+//
+// The stopgap is to alias any 26.1.x lookup to 1.21.11's data set so the bot
+// at least loads. The wire protocol we send is 1.21.11's (774), NOT 26.1.2's
+// (775) — earlier versions of this shim overrode the wire version and the
+// bot logged in successfully but immediately died parsing the server's 26.1.2
+// packets with 1.21.11 schemas (PartialReadError, "Cannot read properties of
+// undefined" in inventory.js). Without the override the server cleanly
+// rejects the handshake with "Outdated client" — unless it has ViaVersion
+// (or similar) installed, in which case the plugin translates between
+// protocols and the connection works end-to-end. Set Version to 1.21.11
+// manually in the session settings if you know your server has ViaVersion.
+//
+// The shim becomes inert automatically once PrismarineJS ships proper 26.1.x
+// data (direct lookup will succeed before the alias branch runs).
+(function shimMcDataForNewMojangScheme() {
+  const mcDataPath = require.resolve("minecraft-data");
+  const original = require(mcDataPath);
+  const aliasFor = (mcVersion) => /^26\.\d+/.test(mcVersion) ? "1.21.11" : null;
+  const wrapped = function (mcVersion, preNetty) {
+    const direct = original(mcVersion, preNetty);
+    if (direct) return direct;
+    const alias = aliasFor(String(mcVersion));
+    if (!alias) return direct;
+    return original(alias, preNetty);
+  };
+  // Preserve all the non-function exports (versions, schemas, supportedVersions, etc.)
+  Object.assign(wrapped, original);
+  require.cache[mcDataPath].exports = wrapped;
+})();
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -8,7 +44,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.6";
+const APP_VERSION = "2.0.7";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -38,6 +74,20 @@ async function resolveSRV(hostname, fallbackPort) {
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+
+// Serve index.html with the current APP_VERSION substituted into asset URLs
+// so browsers don't keep running cached app.js / app.css after an update.
+// This route must come BEFORE express.static or the static middleware would
+// serve the raw template (with the literal __APP_VERSION__ placeholder) first.
+const INDEX_PATH = path.join(__dirname, "public", "index.html");
+const indexTemplate = fs.readFileSync(INDEX_PATH, "utf-8");
+const indexRendered = indexTemplate.replace(/__APP_VERSION__/g, APP_VERSION);
+const serveIndex = (_req, res) => {
+  res.set("Cache-Control", "no-cache");
+  res.type("html").send(indexRendered);
+};
+app.get("/", serveIndex);
+app.get("/index.html", serveIndex);
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -169,6 +219,8 @@ function saveBotConfigs() {
       autoReconnect: b.autoReconnect,
       antiAfk: b.antiAfk,
       assistantName: b.assistantName,
+      breaks: b.breaks,
+      lastBreakAt: b.lastBreakAt,
     });
   }
   fs.writeFileSync(BOTS_PATH, JSON.stringify(configs, null, 2));
@@ -284,6 +336,32 @@ function isRealPlayer(name) {
   // Only allow valid MC username chars
   if (!/^[a-zA-Z0-9_]+$/.test(name)) return false;
   return true;
+}
+
+// Strip Minecraft §-color/format codes from a string.
+function stripChatCodes(s) {
+  return String(s || "").replace(/§[0-9a-fk-or]/gi, "").trim();
+}
+
+// Resolve a chat sender to a real MC username. Direct match via the tab list
+// wins; otherwise reverse-lookup by display name (handles CMI / Essentials
+// nicknames where the server rewrites chat to show the nickname but the tab
+// list still keys players by their real Minecraft username). Returns null if
+// no match — that's our signal that the chat is a plugin broadcast and should
+// be classified as a system message.
+function resolveChatSender(bot, name) {
+  if (!bot || !bot.players || !name) return null;
+  if (bot.players[name]) return name;
+  const target = name.toLowerCase();
+  for (const realName in bot.players) {
+    const p = bot.players[realName];
+    if (!p || !p.displayName) continue;
+    let display = "";
+    try { display = p.displayName.toString(); } catch (_) {}
+    const clean = stripChatCodes(display).toLowerCase();
+    if (clean && clean === target) return realName;
+  }
+  return null;
 }
 
 function sanitizeMcChat(text) {
@@ -408,6 +486,10 @@ function serializeBot(entry, opts = {}) {
     autoReconnect: entry.autoReconnect,
     antiAfk: entry.antiAfk,
     assistantName: entry.assistantName,
+    breaks: entry.breaks,
+    onBreak: !!entry.onBreak,
+    breakUntil: entry.breakUntil || null,
+    lastBreakAt: entry.lastBreakAt || null,
   };
   if (opts.includeLog) payload.chatLog = entry.chatLog;
   return payload;
@@ -439,6 +521,107 @@ function clearReconnectTimer(entry) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Breaks — randomly disconnect the bot for a while to simulate a human
+// stepping away. Works alongside schedule/permanent modes.
+// ---------------------------------------------------------------------------
+function clearBreakCheck(entry) {
+  if (!entry) return;
+  if (entry.breakCheckTimer) { clearInterval(entry.breakCheckTimer); entry.breakCheckTimer = null; }
+}
+
+function clearBreakTimers(entry) {
+  if (!entry) return;
+  clearBreakCheck(entry);
+  if (entry.breakTimer) { clearTimeout(entry.breakTimer); entry.breakTimer = null; }
+}
+
+function startBreakCheck(entry) {
+  if (!entry || entry.botType !== "mineflayer") return;
+  clearBreakTimers(entry);
+  const cfg = entry.breaks;
+  if (!cfg || !cfg.enabled) return;
+  const minutes = Math.max(1, Number(cfg.checkIntervalMinutes) || 30);
+  // Roll every `minutes` while the bot stays connected.
+  entry.breakCheckTimer = setInterval(() => rollForBreak(entry), minutes * 60_000);
+}
+
+function rollForBreak(entry) {
+  if (!entry || entry.state !== "connected" || entry.onBreak) return;
+  const cfg = entry.breaks;
+  if (!cfg || !cfg.enabled) return;
+  // Floor: if it's been longer than minIntervalHours since the last break,
+  // force one. Use the bot's connectedAt as the baseline if we've never broken
+  // before — otherwise a freshly-connected bot would immediately be "overdue".
+  const floorHours = Math.max(0, Number(cfg.minIntervalHours) || 0);
+  if (floorHours > 0) {
+    const baseline = entry.lastBreakAt || entry.connectedAt || Date.now();
+    const overdueBy = Date.now() - baseline;
+    if (overdueBy >= floorHours * 3_600_000) {
+      const forced = Math.max(1, Number(cfg.forcedDurationMinutes) || 10);
+      startBreak(entry, { forcedMinutes: forced });
+      return;
+    }
+  }
+  const chance = Math.max(0, Math.min(100, Number(cfg.chancePercent) || 0));
+  if (Math.random() * 100 >= chance) return;
+  startBreak(entry);
+}
+
+function startBreak(entry, opts = {}) {
+  if (!entry || entry.onBreak) return;
+  const cfg = entry.breaks || {};
+  let durationMin;
+  if (opts.forcedMinutes != null) {
+    durationMin = Math.max(1, Number(opts.forcedMinutes));
+  } else {
+    const min = Math.max(1, Number(cfg.minMinutes) || 5);
+    const max = Math.max(min, Number(cfg.maxMinutes) || 20);
+    durationMin = min + Math.floor(Math.random() * (max - min + 1));
+  }
+  const durationMs = durationMin * 60_000;
+  entry.onBreak = true;
+  entry.breakUntil = Date.now() + durationMs;
+  entry.lastBreakAt = Date.now();
+  // Stop the periodic check while we're on break; we'll restart it on reconnect.
+  if (entry.breakCheckTimer) { clearInterval(entry.breakCheckTimer); entry.breakCheckTimer = null; }
+  const kind = opts.forcedMinutes != null ? "Forced break" : "Taking a break";
+  pushChat(entry, {
+    sender: "System",
+    message: `${kind} for ${durationMin} min (until ~${new Date(entry.breakUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}).`,
+    type: "system",
+  });
+  // Tear down the connection without flagging it as user-initiated (so the
+  // chat log message isn't "Disconnected by user") and without scheduling a
+  // normal reconnect — we'll schedule our own reconnect at break-end.
+  entry.reconnectAttempts = 0;
+  clearReconnectTimer(entry);
+  if (entry.bot) {
+    try { entry.bot.end(); } catch (_) {}
+    entry.bot = null;
+  }
+  entry.connectedAt = null;
+  setBotState(entry, "disconnected");
+  io.emit("botUpdated", serializeBot(entry));
+  entry.breakTimer = setTimeout(() => endBreak(entry), durationMs);
+}
+
+function endBreak(entry) {
+  if (!entry) return;
+  entry.onBreak = false;
+  entry.breakUntil = null;
+  if (entry.breakTimer) { clearTimeout(entry.breakTimer); entry.breakTimer = null; }
+  pushChat(entry, { sender: "System", message: "Break over — reconnecting.", type: "system" });
+  io.emit("botUpdated", serializeBot(entry));
+  // Use the normal connect path so it respects scheduled hours, paused, etc.
+  // If we're outside a scheduled window, the schedule ticker will reconnect
+  // when the window reopens.
+  if (entry.mode === "manual") return; // user controls manual mode
+  if (entry.mode === "scheduled" && !shouldBeOnline(entry)) return;
+  if (entry.paused) return;
+  connectBot(entry.id, false);
+}
+
 function scheduleReconnect(entry) {
   clearReconnectTimer(entry);
 
@@ -450,6 +633,11 @@ function scheduleReconnect(entry) {
 
   // Don't reconnect if paused
   if (entry.paused) return;
+
+  // Don't reconnect if currently on a break — the break timer will reconnect
+  // when it ends. Without this guard auto-reconnect would race the break's
+  // own scheduled return and rejoin immediately.
+  if (entry.onBreak) return;
 
   // Don't reconnect if yielded to real client
   if (entry.yieldedDuplicate) {
@@ -1371,6 +1559,26 @@ function registerBot(cfg) {
     antiAfk: cfg.antiAfk !== undefined ? cfg.antiAfk : true,
     assistantName: cfg.assistantName || "Assistant",
     schedule: cfg.schedule || { start: "00:00", end: "08:00" },
+    // Random "breaks from playing" — periodically rolls a chance to disconnect
+    // for a random duration (simulates a human stepping away). Works alongside
+    // the schedule: a break that would end outside the scheduled window stays
+    // disconnected; the schedule ticker reconnects when the window reopens.
+    breaks: cfg.breaks || {
+      enabled: false,
+      checkIntervalMinutes: 30,
+      chancePercent: 10,
+      minMinutes: 5,
+      maxMinutes: 20,
+      // Floor — if no break has happened within `minIntervalHours`, the next
+      // check forces a `forcedDurationMinutes` break regardless of the roll.
+      minIntervalHours: 3,
+      forcedDurationMinutes: 10,
+    },
+    lastBreakAt: cfg.lastBreakAt || null, // ms timestamp; persisted so restarts don't reset the floor
+    onBreak: false,
+    breakUntil: null,
+    breakTimer: null,
+    breakCheckTimer: null,
     state: "disconnected",
     bot: null,
     bridgePlayers: [],
@@ -1481,6 +1689,19 @@ async function connectBot(id, isReconnect) {
             message: `Server version detected: ${resolvedVersion} (from "${pingResult.version.name}")`,
             type: "system",
           });
+          // Mineflayer doesn't ship game data for 26.x yet. Speak 1.21.11 on
+          // the wire instead and hope the server has ViaVersion (or similar)
+          // installed to translate. If it doesn't, the server will cleanly
+          // reject the handshake as "outdated client" — a much better failure
+          // mode than crashing post-login on packet parse errors.
+          if (/^26\./.test(resolvedVersion)) {
+            pushChat(entry, {
+              sender: "System",
+              message: `Mineflayer doesn't yet support ${resolvedVersion}. Falling back to 1.21.11 — requires ViaVersion plugin on the server. Set Version manually in Setup if your server uses something else.`,
+              type: "system",
+            });
+            resolvedVersion = "1.21.11";
+          }
           io.emit("botUpdated", serializeBot(entry));
         } else {
           pushChat(entry, {
@@ -1601,6 +1822,8 @@ async function connectBot(id, isReconnect) {
         issueAfkCommand(entry, "spawn");
       }, 3000);
     }
+    // Start the periodic break-chance roll once we're actually in-game.
+    startBreakCheck(entry);
   });
 
   bot.on("chat", (username, message) => {
@@ -1611,32 +1834,36 @@ async function connectBot(id, isReconnect) {
     // Skip to avoid a duplicate entry.
     if (isBridgeBotLabel(username)) return;
 
-    // Use the tab list as the source of truth for real players.
-    // Plugin broadcasts (Lands, Skills, etc.) appear as chat from usernames
-    // that aren't actually in the player tab list. This check is universal
-    // regardless of server chat format.
-    const isOnlinePlayer = bot.players && bot.players[username];
-    if (!isOnlinePlayer) {
+    // Use the tab list as the source of truth for real players. Direct match
+    // catches vanilla chat; the display-name fallback inside resolveChatSender
+    // catches CMI/Essentials nicknames where the server rewrites the visible
+    // sender but the tab list still keys the player by their real MC name.
+    // Plugin broadcasts (Lands, Skills, etc.) don't match either path and
+    // correctly fall through to the system-message branch.
+    const realUsername = resolveChatSender(bot, username);
+    if (!realUsername) {
       pushChat(entry, { sender: "Server", message: `${username}: ${message}`, type: "system" });
       return;
     }
 
+    // Display the visible name (nickname if CMI is in play); use the real MC
+    // username for cooldowns, bot-account checks, and AI context so internal
+    // state stays consistent across joins/leaves/renames.
     pushChat(entry, { sender: username, message, type: "chat" });
-    // Check wb watchers — real non-bot players saying "wb"
-    if (!isAnyBotAccount(username) && /^\s*wb\s*[!.]?\s*$/i.test(message)) {
-      checkWbWatchers(username);
+    if (!isAnyBotAccount(realUsername) && /^\s*wb\s*[!.]?\s*$/i.test(message)) {
+      checkWbWatchers(realUsername);
     }
-    // Only trigger AI for real players, skip achievements/advancements
-    if (isRealPlayer(username) && !isAnyBotAccount(username)) {
+    if (isRealPlayer(realUsername) && !isAnyBotAccount(realUsername)) {
       if (/has made the advancement|has completed the challenge|has reached the goal/i.test(message)) return;
-      handleAIChat(entry, username, message, false);
+      handleAIChat(entry, realUsername, message, false);
     }
   });
 
   bot.on("whisper", (username, message) => {
     pushChat(entry, { sender: username, message, type: "whisper" });
-    if (isRealPlayer(username) && bot.players && bot.players[username]) {
-      handleAIChat(entry, username, message, true);
+    const realUsername = resolveChatSender(bot, username);
+    if (realUsername && isRealPlayer(realUsername)) {
+      handleAIChat(entry, realUsername, message, true);
     }
   });
 
@@ -1717,6 +1944,7 @@ async function connectBot(id, isReconnect) {
       pushChat(entry, { sender: "System", message: `Kicked: ${text}`, type: "error" });
     }
 
+    clearBreakCheck(entry);
     setBotState(entry, "disconnected");
     entry.bot = null;
     entry.connectedAt = null;
@@ -1732,6 +1960,7 @@ async function connectBot(id, isReconnect) {
     // Avoid double-fire if kicked already handled it
     if (entry.state === "disconnected") return;
     pushChat(entry, { sender: "System", message: `Disconnected: ${reason || "unknown"}`, type: "system" });
+    clearBreakCheck(entry);
     setBotState(entry, "disconnected");
     entry.bot = null;
     entry.connectedAt = null;
@@ -1744,6 +1973,10 @@ function disconnectBot(id, suppressReconnect) {
   if (!entry) return;
   clearReconnectTimer(entry);
   clearBotTimers(entry);
+  clearBreakTimers(entry);
+  // User-initiated disconnect cancels any pending break.
+  entry.onBreak = false;
+  entry.breakUntil = null;
   entry.reconnectAttempts = 0;
   if (entry.bot) {
     try { entry.bot.end(); } catch (_) {}
@@ -1805,6 +2038,7 @@ function removeBot(id) {
   if (!entry) return;
   clearReconnectTimer(entry);
   clearBotTimers(entry);
+  clearBreakTimers(entry);
   if (entry.bot) {
     try { entry.bot.end(); } catch (_) {}
   }
@@ -1828,6 +2062,8 @@ setInterval(() => {
     if (wantOnline && entry.state === "disconnected" && !entry.reconnectTimer) {
       // Should be online but isn't, and no reconnect pending
       if (isInMaintenanceWindow()) continue; // let maintenance window pass
+      // On break — the break's own timer handles reconnect at break-end.
+      if (entry.onBreak) continue;
 
       // Clear yield flag if the player has presumably left
       if (entry.yieldedDuplicate) {
@@ -1879,6 +2115,13 @@ io.on("connection", (socket) => {
     if (cfg.mode !== undefined) entry.mode = cfg.mode;
     if (cfg.aiMode !== undefined) entry.aiMode = cfg.aiMode;
     if (cfg.schedule !== undefined) entry.schedule = cfg.schedule;
+    if (cfg.breaks !== undefined) {
+      entry.breaks = { ...(entry.breaks || {}), ...cfg.breaks };
+      // Restart the check loop with the new cadence (no-op if disabled or
+      // not currently connected — startBreakCheck guards both).
+      if (entry.state === "connected") startBreakCheck(entry);
+      else clearBreakCheck(entry);
+    }
     // Only update connection params while disconnected
     if (entry.state === "disconnected") {
       if (cfg.username !== undefined) entry.username = cfg.username;

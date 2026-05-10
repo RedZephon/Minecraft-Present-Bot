@@ -12,6 +12,7 @@ const state = {
   metrics: {},       // { botId: { latency, uptime } }
   defaultPrompts: {},
   detailsOpen: true,
+  detailsTab: 'controls',  // 'controls' | 'setup'
   theme: document.documentElement.getAttribute('data-theme') || 'dark',
 };
 
@@ -39,6 +40,20 @@ function formatUptimeFull(ms) {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   return `${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
+}
+
+function formatRelativeAgo(ts) {
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return 'just now';
+  const s = Math.floor(diffMs / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h < 24) return rem ? `${h}h ${rem}m ago` : `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 function showToast(msg, level) {
@@ -633,106 +648,35 @@ function renderDetails() {
   // update_bot only applies them when state === "disconnected".
   const lockedAttr = isDisconnected ? '' : 'disabled';
   const lockedNote = isDisconnected ? '' : '<div class="field-note">Disconnect the session to edit connection settings.</div>';
+  const breaks = bot.breaks || { enabled: false, checkIntervalMinutes: 30, chancePercent: 10, minMinutes: 5, maxMinutes: 20, minIntervalHours: 3, forcedDurationMinutes: 10 };
+  const breakReturnAt = bot.onBreak && bot.breakUntil
+    ? new Date(bot.breakUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const lastBreakLabel = bot.lastBreakAt
+    ? formatRelativeAgo(bot.lastBreakAt)
+    : 'Never';
 
-  content.innerHTML = `
-    <div class="details-section">
-      <h4>Identity</h4>
-      <div class="field">
-        <label>Label</label>
-        <input type="text" data-field="label" value="${esc(bot.label || '')}"
-          onchange="updateSessionField('${bot.id}', 'label', this.value.trim())"
-          placeholder="Display name" />
-      </div>
-      <div class="field">
-        <label>Bot Type</label>
-        <select data-field="botType" ${lockedAttr}
-          onchange="updateSessionField('${bot.id}', 'botType', this.value)">
-          <option value="mineflayer" ${isMineflayer ? 'selected' : ''}>Minecraft Account (Mineflayer)</option>
-          <option value="bridge" ${!isMineflayer ? 'selected' : ''}>Virtual Player (CobbleBridge)</option>
-        </select>
-        <div class="field-note">${isMineflayer ? 'Connects using a real Minecraft account.' : 'Virtual player via CobbleBridge plugin. No MC account needed.'}</div>
-      </div>
-    </div>
+  // Tab system: "Controls" surfaces the things you actually touch day-to-day
+  // (status, toggles, AI mode, restart/remove). "Setup" hides the one-time
+  // config (identity, server credentials, schedule) so it doesn't clutter
+  // the panel after initial setup.
+  const tab = state.detailsTab === 'setup' ? 'setup' : 'controls';
 
-    ${isMineflayer ? `
-    <div class="details-section">
-      <h4>Server</h4>
-      <div class="field">
-        <label>Microsoft Email</label>
-        <input type="text" data-field="username" value="${esc(bot.username || '')}" ${lockedAttr}
-          onchange="updateSessionField('${bot.id}', 'username', this.value.trim())"
-          placeholder="email@outlook.com" />
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label>Host</label>
-          <input type="text" data-field="host" value="${esc(bot.host || '')}" ${lockedAttr}
-            onchange="updateSessionField('${bot.id}', 'host', this.value.trim())"
-            placeholder="play.example.net" />
-        </div>
-        <div class="field">
-          <label>Port</label>
-          <input type="text" data-field="port" value="${esc(String(bot.port || 25565))}" ${lockedAttr}
-            onchange="updateSessionField('${bot.id}', 'port', this.value.trim() || '25565')" />
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label>Auth Type</label>
-          <input type="text" data-field="auth" value="${esc(bot.auth || 'microsoft')}" ${lockedAttr}
-            onchange="updateSessionField('${bot.id}', 'auth', this.value.trim() || 'microsoft')" />
-        </div>
-        <div class="field">
-          <label>Version</label>
-          <input type="text" data-field="version" value="${esc(bot.version || '')}" ${lockedAttr}
-            onchange="updateSessionField('${bot.id}', 'version', this.value.trim())"
-            placeholder="${esc(bot.detectedVersion || 'auto-detect')}" />
-        </div>
-      </div>
-      ${lockedNote}
-    </div>
-    ` : ''}
-
+  const controlsTab = `
     <div class="details-section">
       <h4>Connection</h4>
+      ${breakReturnAt ? `<div class="break-banner"><i class="fa-solid fa-mug-hot"></i> On a break \u2014 returning around ${breakReturnAt}</div>` : ''}
       <div class="info-grid">
         <div class="info-row">
           <span class="label">Status</span>
-          <span class="value ${isConnected ? 'success' : ''}">${isConnected ? '\u25CF Connected' : isConnecting ? '\u25CF Connecting' : '\u25CB Disconnected'}</span>
+          <span class="value ${isConnected ? 'success' : ''}">${isConnected ? '\u25CF Connected' : isConnecting ? '\u25CF Connecting' : breakReturnAt ? '\u25CB On break' : '\u25CB Disconnected'}</span>
         </div>
         <div class="info-row"><span class="label">Uptime</span><span class="value" id="detailUptime">${isConnected ? formatUptimeFull(uptime) : '--'}</span></div>
         <div class="info-row"><span class="label">Latency</span><span class="value" id="detailLatency">${metrics.latency ? metrics.latency + 'ms' : '--'}</span></div>
         ${isMineflayer ? `<div class="info-row"><span class="label">MC Username</span><span class="value">${esc(mcName)}</span></div>` : ''}
         ${bot.detectedVersion ? `<div class="info-row"><span class="label">Detected</span><span class="value">${esc(bot.detectedVersion)}</span></div>` : ''}
+        ${breaks.enabled || bot.lastBreakAt ? `<div class="info-row"><span class="label">Last Break</span><span class="value">${esc(lastBreakLabel)}</span></div>` : ''}
       </div>
-    </div>
-
-    <div class="details-section">
-      <h4>Schedule</h4>
-      <div class="field">
-        <label>Mode</label>
-        <select data-field="mode" onchange="updateSessionField('${bot.id}', 'mode', this.value)">
-          <option value="manual" ${bot.mode === 'manual' ? 'selected' : ''}>Manual</option>
-          <option value="permanent" ${bot.mode === 'permanent' ? 'selected' : ''}>Permanent (always online)</option>
-          <option value="scheduled" ${bot.mode === 'scheduled' ? 'selected' : ''}>Scheduled</option>
-        </select>
-        <div class="field-note">${bot.mode === 'manual' ? 'You control connect/disconnect manually.' : bot.mode === 'permanent' ? 'Auto-connects and reconnects on disconnect.' : 'Connects and disconnects at the times below.'}</div>
-      </div>
-      ${bot.mode === 'scheduled' ? `
-      <div class="field-row">
-        <div class="field">
-          <label>Connect At</label>
-          <input type="time" data-field="scheduleStart" value="${esc(bot.schedule?.start || '00:00')}"
-            onchange="updateScheduleField('${bot.id}', 'start', this.value)" />
-        </div>
-        <div class="field">
-          <label>Disconnect At</label>
-          <input type="time" data-field="scheduleEnd" value="${esc(bot.schedule?.end || '08:00')}"
-            onchange="updateScheduleField('${bot.id}', 'end', this.value)" />
-        </div>
-      </div>
-      <div class="field-note">Uses 24-hour time. Wraps midnight.</div>
-      ` : ''}
     </div>
 
     <div class="details-section">
@@ -802,6 +746,160 @@ function renderDetails() {
     </div>
   `;
 
+  const setupTab = `
+    <div class="details-section">
+      <h4>Identity</h4>
+      <div class="field">
+        <label>Label</label>
+        <input type="text" data-field="label" value="${esc(bot.label || '')}"
+          onchange="updateSessionField('${bot.id}', 'label', this.value.trim())"
+          placeholder="Display name" />
+      </div>
+      <div class="field">
+        <label>Bot Type</label>
+        <select data-field="botType" ${lockedAttr}
+          onchange="updateSessionField('${bot.id}', 'botType', this.value)">
+          <option value="mineflayer" ${isMineflayer ? 'selected' : ''}>Minecraft Account (Mineflayer)</option>
+          <option value="bridge" ${!isMineflayer ? 'selected' : ''}>Virtual Player (CobbleBridge)</option>
+        </select>
+        <div class="field-note">${isMineflayer ? 'Connects using a real Minecraft account.' : 'Virtual player via CobbleBridge plugin. No MC account needed.'}</div>
+      </div>
+    </div>
+
+    ${isMineflayer ? `
+    <div class="details-section">
+      <h4>Server</h4>
+      <div class="field">
+        <label>Microsoft Email</label>
+        <input type="text" data-field="username" value="${esc(bot.username || '')}" ${lockedAttr}
+          onchange="updateSessionField('${bot.id}', 'username', this.value.trim())"
+          placeholder="email@outlook.com" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Host</label>
+          <input type="text" data-field="host" value="${esc(bot.host || '')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'host', this.value.trim())"
+            placeholder="play.example.net" />
+        </div>
+        <div class="field">
+          <label>Port</label>
+          <input type="text" data-field="port" value="${esc(String(bot.port || 25565))}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'port', this.value.trim() || '25565')" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Auth Type</label>
+          <input type="text" data-field="auth" value="${esc(bot.auth || 'microsoft')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'auth', this.value.trim() || 'microsoft')" />
+        </div>
+        <div class="field">
+          <label>Version</label>
+          <input type="text" data-field="version" value="${esc(bot.version || '')}" ${lockedAttr}
+            onchange="updateSessionField('${bot.id}', 'version', this.value.trim())"
+            placeholder="${esc(bot.detectedVersion || 'auto-detect')}" />
+        </div>
+      </div>
+      ${lockedNote}
+    </div>
+    ` : ''}
+
+    <div class="details-section">
+      <h4>Schedule</h4>
+      <div class="field">
+        <label>Mode</label>
+        <select data-field="mode" onchange="updateSessionField('${bot.id}', 'mode', this.value)">
+          <option value="manual" ${bot.mode === 'manual' ? 'selected' : ''}>Manual</option>
+          <option value="permanent" ${bot.mode === 'permanent' ? 'selected' : ''}>Permanent (always online)</option>
+          <option value="scheduled" ${bot.mode === 'scheduled' ? 'selected' : ''}>Scheduled</option>
+        </select>
+        <div class="field-note">${bot.mode === 'manual' ? 'You control connect/disconnect manually.' : bot.mode === 'permanent' ? 'Auto-connects and reconnects on disconnect.' : 'Connects and disconnects at the times below.'}</div>
+      </div>
+      ${bot.mode === 'scheduled' ? `
+      <div class="field-row">
+        <div class="field">
+          <label>Connect At</label>
+          <input type="time" data-field="scheduleStart" value="${esc(bot.schedule?.start || '00:00')}"
+            onchange="updateScheduleField('${bot.id}', 'start', this.value)" />
+        </div>
+        <div class="field">
+          <label>Disconnect At</label>
+          <input type="time" data-field="scheduleEnd" value="${esc(bot.schedule?.end || '08:00')}"
+            onchange="updateScheduleField('${bot.id}', 'end', this.value)" />
+        </div>
+      </div>
+      <div class="field-note">Uses 24-hour time. Wraps midnight.</div>
+      ` : ''}
+    </div>
+
+    <div class="details-section">
+      <h4>Breaks</h4>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Take random breaks</div>
+          <div class="toggle-desc">Periodically rolls a chance to disconnect for a random duration — simulates stepping away.</div>
+        </div>
+        <div class="toggle ${breaks.enabled ? 'on' : ''}" data-field="breaksEnabled" onclick="toggleBreaks('${bot.id}', this)"></div>
+      </div>
+      ${breaks.enabled ? `
+      <div class="field-row" style="margin-top:12px;">
+        <div class="field">
+          <label>Check Every (min)</label>
+          <input type="number" min="1" max="240" data-field="breaksCheckInterval"
+            value="${esc(String(breaks.checkIntervalMinutes ?? 30))}"
+            onchange="updateBreakField('${bot.id}', 'checkIntervalMinutes', this.value)" />
+        </div>
+        <div class="field">
+          <label>Chance (%)</label>
+          <input type="number" min="0" max="100" data-field="breaksChance"
+            value="${esc(String(breaks.chancePercent ?? 10))}"
+            onchange="updateBreakField('${bot.id}', 'chancePercent', this.value)" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Min Length (min)</label>
+          <input type="number" min="1" max="1440" data-field="breaksMin"
+            value="${esc(String(breaks.minMinutes ?? 5))}"
+            onchange="updateBreakField('${bot.id}', 'minMinutes', this.value)" />
+        </div>
+        <div class="field">
+          <label>Max Length (min)</label>
+          <input type="number" min="1" max="1440" data-field="breaksMax"
+            value="${esc(String(breaks.maxMinutes ?? 20))}"
+            onchange="updateBreakField('${bot.id}', 'maxMinutes', this.value)" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Force After (hr)</label>
+          <input type="number" min="0" max="48" data-field="breaksMinInterval"
+            value="${esc(String(breaks.minIntervalHours ?? 3))}"
+            onchange="updateBreakField('${bot.id}', 'minIntervalHours', this.value)" />
+        </div>
+        <div class="field">
+          <label>Forced Length (min)</label>
+          <input type="number" min="1" max="240" data-field="breaksForcedDuration"
+            value="${esc(String(breaks.forcedDurationMinutes ?? 10))}"
+            onchange="updateBreakField('${bot.id}', 'forcedDurationMinutes', this.value)" />
+        </div>
+      </div>
+      <div class="field-note">Every ${breaks.checkIntervalMinutes ?? 30} min while connected, ${breaks.chancePercent ?? 10}% chance to take a ${breaks.minMinutes ?? 5}–${breaks.maxMinutes ?? 20} min break. If no break happens within ${breaks.minIntervalHours ?? 3}h, the next check forces a ${breaks.forcedDurationMinutes ?? 10} min break. Set "Force After" to 0 to disable the floor. Auto-reconnect is paused during breaks. In scheduled mode, breaks that end outside the window stay disconnected until the window reopens.</div>
+      ` : ''}
+    </div>
+  `;
+
+  content.innerHTML = `
+    <div class="details-tabs" role="tablist">
+      <button class="details-tab ${tab === 'controls' ? 'active' : ''}" role="tab"
+        onclick="setDetailsTab('controls')">Controls</button>
+      <button class="details-tab ${tab === 'setup' ? 'active' : ''}" role="tab"
+        onclick="setDetailsTab('setup')">Setup</button>
+    </div>
+    ${tab === 'controls' ? controlsTab : setupTab}
+  `;
+
   // Restore focus + cursor + in-progress value if the user was mid-edit.
   if (focusKey) {
     const el = content.querySelector(`[data-field="${focusKey}"]`);
@@ -815,6 +913,13 @@ function renderDetails() {
       }
     }
   }
+}
+
+function setDetailsTab(tab) {
+  if (tab !== 'controls' && tab !== 'setup') return;
+  if (state.detailsTab === tab) return;
+  state.detailsTab = tab;
+  renderDetails();
 }
 
 // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Session field updates (inline in details panel) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -842,6 +947,36 @@ function updateScheduleField(id, key, value) {
   schedule[key] = value;
   bot.schedule = schedule;
   socket.emit('update_bot', { id, schedule });
+}
+
+function defaultBreaks() {
+  return { enabled: false, checkIntervalMinutes: 30, chancePercent: 10, minMinutes: 5, maxMinutes: 20, minIntervalHours: 3, forcedDurationMinutes: 10 };
+}
+
+function toggleBreaks(id, el) {
+  const bot = state.bots[id];
+  if (!bot) return;
+  const breaks = { ...(bot.breaks || defaultBreaks()) };
+  breaks.enabled = !breaks.enabled;
+  bot.breaks = breaks;
+  el.classList.toggle('on', breaks.enabled);
+  socket.emit('update_bot', { id, breaks });
+  renderDetails();
+}
+
+function updateBreakField(id, key, value) {
+  const bot = state.bots[id];
+  if (!bot) return;
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 0) { showToast('Invalid number', 'warn'); return; }
+  const breaks = { ...(bot.breaks || defaultBreaks()) };
+  breaks[key] = n;
+  // Keep min <= max coherent so we never roll a negative range server-side.
+  if (key === 'minMinutes' && breaks.maxMinutes != null && n > breaks.maxMinutes) breaks.maxMinutes = n;
+  if (key === 'maxMinutes' && breaks.minMinutes != null && n < breaks.minMinutes) breaks.minMinutes = n;
+  bot.breaks = breaks;
+  socket.emit('update_bot', { id, breaks });
+  renderDetails();
 }
 
 function createNewSession() {
