@@ -1,39 +1,9 @@
 require("dotenv").config();
 
-// --- minecraft-data shim for the new Mojang versioning scheme (26.X.Y) ---
-// Mineflayer 4.37.1 / minecraft-data 3.110.0 don't yet ship the per-version
-// data directory or a dataPaths.json entry for Java Edition 26.1.x. A direct
-// lookup returns null and minecraft-protocol throws "unsupported protocol
-// version: 26.1.2" before we can connect.
-//
-// The stopgap is to alias any 26.1.x lookup to 1.21.11's data set so the bot
-// at least loads. The wire protocol we send is 1.21.11's (774), NOT 26.1.2's
-// (775) — earlier versions of this shim overrode the wire version and the
-// bot logged in successfully but immediately died parsing the server's 26.1.2
-// packets with 1.21.11 schemas (PartialReadError, "Cannot read properties of
-// undefined" in inventory.js). Without the override the server cleanly
-// rejects the handshake with "Outdated client" — unless it has ViaVersion
-// (or similar) installed, in which case the plugin translates between
-// protocols and the connection works end-to-end. Set Version to 1.21.11
-// manually in the session settings if you know your server has ViaVersion.
-//
-// The shim becomes inert automatically once PrismarineJS ships proper 26.1.x
-// data (direct lookup will succeed before the alias branch runs).
-(function shimMcDataForNewMojangScheme() {
-  const mcDataPath = require.resolve("minecraft-data");
-  const original = require(mcDataPath);
-  const aliasFor = (mcVersion) => /^26\.\d+/.test(mcVersion) ? "1.21.11" : null;
-  const wrapped = function (mcVersion, preNetty) {
-    const direct = original(mcVersion, preNetty);
-    if (direct) return direct;
-    const alias = aliasFor(String(mcVersion));
-    if (!alias) return direct;
-    return original(alias, preNetty);
-  };
-  // Preserve all the non-function exports (versions, schemas, supportedVersions, etc.)
-  Object.assign(wrapped, original);
-  require.cache[mcDataPath].exports = wrapped;
-})();
+// Java Edition 26.1.x (protocol 775) is supported natively as of
+// minecraft-data 3.113.x + minecraft-protocol 1.67.x + mineflayer master
+// (upstream commit "26.1", 2026-08-17). The 1.21.11-via-ViaVersion fallback
+// this file used to carry is gone — we speak 26.1 on the wire directly.
 
 const express = require("express");
 const http = require("http");
@@ -44,7 +14,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.0.9";
+const APP_VERSION = "2.1.0";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -69,6 +39,88 @@ async function resolveSRV(hostname, fallbackPort) {
     // No SRV record — fall through to using hostname directly
   }
   return { host: hostname, port: fallbackPort };
+}
+
+// ---------------------------------------------------------------------------
+// Version negotiation
+// ---------------------------------------------------------------------------
+// Mineflayer can only speak protocols it ships data for — 26.1 (protocol 775)
+// on the currently pinned build. Anything newer is reachable only when the
+// server runs ViaVersion, which accepts an older client and translates for it.
+//
+// ViaVersion announces that in the ping response: it echoes back the protocol
+// number the client asked for when it can serve that version, and returns the
+// server's own protocol number when it can't. Probing that is far more robust
+// than regex-matching the free-text version name, which is just whatever the
+// server owner typed — a "Paper 26.1.2" MOTD tells you nothing about whether
+// the server will accept a 1.21.11 client, and both answers are common.
+const MF_VERSIONS = mineflayer.testedVersions;               // ascending
+const MF_LATEST = MF_VERSIONS[MF_VERSIONS.length - 1];
+const VERSION_PROBE_DEPTH = 5;   // how far below MF_LATEST to probe for a Via-served version
+
+function protocolFor(mcVersion) {
+  try {
+    return require("minecraft-data")(mcVersion).version.version;
+  } catch (_) {
+    return null;
+  }
+}
+
+function pingAs(host, port, version) {
+  return mcping({ host, port, version, closeTimeout: 8000 });
+}
+
+// Resolve the newest version this server will actually accept us on.
+// Returns { version, serverName, serverProtocol, via, favicon }; `version` is
+// null when nothing mineflayer speaks is accepted.
+async function negotiateVersion(host, port) {
+  const first = await pingAs(host, port, MF_LATEST);
+  const serverName = first?.version?.name || "unknown";
+  const serverProtocol = first?.version?.protocol ?? null;
+  const nameVersion = (String(serverName).match(/(\d+\.\d+(?:\.\d+)?)/) || [])[1] || null;
+  const base = { serverName, serverProtocol, favicon: first?.favicon || null };
+  // "via" means we're being translated: the version the server calls itself
+  // speaks a different protocol than the one we're about to join on. Comparing
+  // protocols rather than version strings keeps "Paper 26.1.2" served natively
+  // as 26.1 from being mislabelled as translated.
+  const withVia = (version) => {
+    const nameProtocol = nameVersion ? protocolFor(nameVersion) : null;
+    return { ...base, version, via: nameProtocol !== null && nameProtocol !== protocolFor(version) };
+  };
+
+  // Echoed our own protocol back — this version is served.
+  if (serverProtocol !== null && serverProtocol === protocolFor(MF_LATEST)) return withVia(MF_LATEST);
+
+  // Answered with its own protocol. If we ship data for it, speak it natively.
+  const exact = MF_VERSIONS.find(v => protocolFor(v) === serverProtocol);
+  if (exact) return withVia(exact);
+
+  // Unknown/newer protocol (775 = Java 26.1.x). A ViaVersion install may still
+  // accept an older client than the one we just tried, so probe downward.
+  const probes = MF_VERSIONS.slice(-VERSION_PROBE_DEPTH, -1).reverse();
+  for (const v of probes) {
+    try {
+      const r = await pingAs(host, port, v);
+      if (r?.version?.protocol === protocolFor(v)) return withVia(v);
+    } catch (_) { /* try the next one */ }
+  }
+  return { ...base, version: null, via: false };
+}
+
+// mineflayer emits "spawn" only after an update_health packet with health > 0
+// (node_modules/mineflayer/lib/plugins/health.js). Handshake, login, and the
+// server broadcasting our join to everyone else can all succeed while that one
+// packet never arrives — leaving the session pinned at "connecting" until
+// minecraft-protocol's read timeout drops the socket a minute later. Watch for
+// it so the failure is reported rather than silently hanging.
+const SPAWN_TIMEOUT_MS = parseInt(process.env.MC_SPAWN_TIMEOUT_MS || "45000", 10);
+const PACKET_TRACE = process.env.MC_PACKET_TRACE === "1";
+
+function clearSpawnWatchdog(entry) {
+  if (entry && entry.spawnWatchdog) {
+    clearTimeout(entry.spawnWatchdog);
+    entry.spawnWatchdog = null;
+  }
 }
 
 const app = express();
@@ -562,7 +614,9 @@ function clearBreakTimers(entry) {
 
 function startBreakCheck(entry) {
   if (!entry || entry.botType !== "mineflayer") return;
-  clearBreakTimers(entry);
+  // Only reset the roll interval — clearBreakTimers() would also kill a pending
+  // break-end timer, stranding entry.onBreak at true.
+  clearBreakCheck(entry);
   const cfg = entry.breaks;
   if (!cfg || !cfg.enabled) return;
   const minutes = Math.max(1, Number(cfg.checkIntervalMinutes) || 30);
@@ -1362,12 +1416,20 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
 
   // Support bot: ONLY respond to @botName mentions or whispers
   if (entry.aiMode === "support") {
-    if (isBotSilenced(entry.id)) return;
-
     const lower = message.toLowerCase();
     const lowerBotName = botName.toLowerCase();
     const mentionsBot = lower.includes("@" + lowerBotName) || lower.includes(lowerBotName);
     const isOwner = isOwnerUsername(playerName);
+
+    // While silenced the bot answers nothing — except the owner's resume
+    // command, which has to get through or there's no way back in from chat.
+    if (isBotSilenced(entry.id)) {
+      if (mentionsBot && isOwner && /\b(resume|unmute|speak|you can talk)\b/.test(lower)) {
+        botSilenceUntil.delete(entry.id);
+        sendBotMessage(entry, "I'm back! Ready to help.");
+      }
+      return;
+    }
 
     // Admin commands — only from owner, must mention bot
     if (mentionsBot && isOwner) {
@@ -1380,12 +1442,7 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
         sendBotMessage(entry, `Got it! I'll stay quiet for ${mins} minutes.`);
         return;
       }
-      // Resume (cancel silence early) — only when actually silenced
-      if (isBotSilenced(entry.id) && /\b(resume|unmute|speak|you can talk)\b/.test(lower)) {
-        botSilenceUntil.delete(entry.id);
-        sendBotMessage(entry, "I'm back! Ready to help.");
-        return;
-      }
+      // (Resume is handled above, while still silenced.)
       // Status
       if (/\bstatus\b/.test(lower)) {
         const silenced = isBotSilenced(entry.id);
@@ -1638,6 +1695,7 @@ function registerBotTimeout(entry, fn, ms) {
 }
 
 function clearBotTimers(entry) {
+  clearSpawnWatchdog(entry);
   if (!entry || !entry.pendingTimers) return;
   for (const handle of entry.pendingTimers) clearTimeout(handle);
   entry.pendingTimers.clear();
@@ -1652,6 +1710,14 @@ async function connectBot(id, isReconnect) {
   if (!isReconnect) {
     entry.yieldedDuplicate = false;
     entry.reconnectAttempts = 0;
+    // An explicit connect overrides an in-progress break. Without this the
+    // break's pending end-timer gets cleared on spawn while entry.onBreak stays
+    // true, which permanently blocks auto-reconnect and future break rolls.
+    if (entry.onBreak) {
+      entry.onBreak = false;
+      entry.breakUntil = null;
+      if (entry.breakTimer) { clearTimeout(entry.breakTimer); entry.breakTimer = null; }
+    }
   }
 
   clearReconnectTimer(entry);
@@ -1689,52 +1755,45 @@ async function connectBot(id, isReconnect) {
   // --- Version resolution ---
   let resolvedVersion = entry.version || null; // manual override
 
-  if (!resolvedVersion) {
-    // Ping server to detect version
+  if (resolvedVersion) {
+    pushChat(entry, {
+      sender: "System",
+      message: `Using manually set version: ${resolvedVersion}`,
+      type: "system",
+    });
+  } else {
     try {
       pushChat(entry, { sender: "System", message: "Pinging server to detect version...", type: "system" });
-      const pingResult = await mcping({ host: effectiveHostEarly, port: effectivePortEarly, closeTimeout: 8000 });
+      const neg = await negotiateVersion(effectiveHostEarly, effectivePortEarly);
 
       // Capture server favicon
-      if (pingResult && pingResult.favicon && !serverFavicon) {
-        serverFavicon = pingResult.favicon; // "data:image/png;base64,..."
+      if (neg.favicon && !serverFavicon) {
+        serverFavicon = neg.favicon; // "data:image/png;base64,..."
         io.emit("serverFavicon", serverFavicon);
       }
 
-      if (pingResult && pingResult.version && pingResult.version.name) {
-        // Version name might be "1.21.4", "Paper 1.21.4", or — under the new
-        // Mojang scheme — "26.1.2" / "Paper 26.1.2". Extract the numeric part.
-        const vMatch = pingResult.version.name.match(/(\d+\.\d+(?:\.\d+)?)/);
-        if (vMatch) {
-          resolvedVersion = vMatch[1];
-          entry.detectedVersion = resolvedVersion;
-          pushChat(entry, {
-            sender: "System",
-            message: `Server version detected: ${resolvedVersion} (from "${pingResult.version.name}")`,
-            type: "system",
-          });
-          // Mineflayer doesn't ship game data for 26.x yet. Speak 1.21.11 on
-          // the wire instead and hope the server has ViaVersion (or similar)
-          // installed to translate. If it doesn't, the server will cleanly
-          // reject the handshake as "outdated client" — a much better failure
-          // mode than crashing post-login on packet parse errors.
-          if (/^26\./.test(resolvedVersion)) {
-            pushChat(entry, {
-              sender: "System",
-              message: `Mineflayer doesn't yet support ${resolvedVersion}. Falling back to 1.21.11 — requires ViaVersion plugin on the server. Set Version manually in Setup if your server uses something else.`,
-              type: "system",
-            });
-            resolvedVersion = "1.21.11";
-          }
-          io.emit("botUpdated", serializeBot(entry));
-        } else {
-          pushChat(entry, {
-            sender: "System",
-            message: `Could not parse version from "${pingResult.version.name}". Letting mineflayer negotiate.`,
-            type: "system",
-          });
-        }
+      if (!neg.version) {
+        // Nothing we can speak was accepted. Say so precisely rather than
+        // connecting anyway and stalling — the old behaviour was to guess a
+        // version, log in, and then sit in "connecting" forever.
+        const msg = `Server "${neg.serverName}" only accepts protocol ${neg.serverProtocol}, which this mineflayer build can't speak (it tops out at ${MF_LATEST}). Update mineflayer, install ViaVersion on the server, or set Version manually in Setup.`;
+        pushChat(entry, { sender: "System", message: msg, type: "error" });
+        console.error(`[MC-Presence] [${entry.label}] ${msg}`);
+        setBotState(entry, "disconnected");
+        scheduleReconnect(entry);
+        return;
       }
+
+      resolvedVersion = neg.version;
+      entry.detectedVersion = resolvedVersion;
+      pushChat(entry, {
+        sender: "System",
+        message: neg.via
+          ? `Server reports "${neg.serverName}" but accepts protocol ${neg.serverProtocol} — joining as ${resolvedVersion} through the server's version-translation plugin.`
+          : `Server version detected: ${resolvedVersion} (from "${neg.serverName}", protocol ${neg.serverProtocol})`,
+        type: "system",
+      });
+      io.emit("botUpdated", serializeBot(entry));
     } catch (pingErr) {
       pushChat(entry, {
         sender: "System",
@@ -1742,12 +1801,6 @@ async function connectBot(id, isReconnect) {
         type: "system",
       });
     }
-  } else {
-    pushChat(entry, {
-      sender: "System",
-      message: `Using manually set version: ${resolvedVersion}`,
-      type: "system",
-    });
   }
 
   // --- Build mineflayer options ---
@@ -1795,6 +1848,42 @@ async function connectBot(id, isReconnect) {
   }
 
   const bot = entry.bot;
+  let hasSpawned = false;
+
+  // --- Connection diagnostics ---
+  // Record which play-state packets actually arrive so a stalled login can be
+  // explained instead of guessed at. Cheap enough to leave on permanently;
+  // MC_PACKET_TRACE=1 additionally logs every packet name.
+  const trace = { counts: new Map(), order: [], errors: [] };
+  entry.packetTrace = trace;
+
+  bot._client.on("packet", (_data, meta) => {
+    if (!meta || meta.state !== "play") return;
+    if (!trace.counts.has(meta.name)) {
+      trace.counts.set(meta.name, 0);
+      trace.order.push(meta.name);
+    }
+    trace.counts.set(meta.name, trace.counts.get(meta.name) + 1);
+    if (PACKET_TRACE) console.log(`[MC-Presence] [${entry.label}] << ${meta.name}`);
+  });
+
+  // Fires when login succeeded but spawn never followed. See SPAWN_TIMEOUT_MS.
+  const onSpawnTimeout = () => {
+    entry.spawnWatchdog = null;
+    if (hasSpawned) return;
+    const seen = trace.order.map(n => `${n}x${trace.counts.get(n)}`).join(", ") || "none";
+    const detail = trace.counts.has("update_health")
+      ? "update_health did arrive, so mineflayer stalled after it."
+      : "no update_health packet ever arrived, and mineflayer waits on that packet to emit spawn.";
+    const msg = `Logged in but never spawned after ${Math.round(SPAWN_TIMEOUT_MS / 1000)}s — ${detail} Dropping the connection instead of hanging.`;
+    pushChat(entry, { sender: "System", message: msg, type: "error" });
+    console.error(`[MC-Presence] [${entry.label}] ${msg}`);
+    console.error(`[MC-Presence] [${entry.label}] play packets seen: ${seen}`);
+    if (trace.errors.length) {
+      console.error(`[MC-Presence] [${entry.label}] client errors: ${trace.errors.join(" | ")}`);
+    }
+    try { bot.end("spawn-timeout"); } catch (_) {}
+  };
 
   // Low-level client state tracking
   bot._client.on("state", (newState) => {
@@ -1802,12 +1891,24 @@ async function connectBot(id, isReconnect) {
   });
 
   bot._client.on("error", (err) => {
+    trace.errors.push(err.message);
     console.error(`[MC-Presence] [${entry.label}] Client error:`, err.message);
+    // Surface the first few in the dashboard — a deserialization failure here
+    // is usually the real reason a session never finishes connecting, and it
+    // used to be visible only in the server console.
+    if (trace.errors.length <= 3) {
+      pushChat(entry, { sender: "System", message: `Protocol error: ${err.message}`, type: "error" });
+    }
   });
 
   bot.on("login", () => {
     console.log(`[MC-Presence] [${entry.label}] Login event fired`);
     registerBotUsername(bot.username, entry.id);
+    // Arm the watchdog only once we're in the world — before this point the
+    // connection can legitimately sit idle for minutes waiting on MSA device
+    // -code auth, which must not be timed out.
+    clearSpawnWatchdog(entry);
+    entry.spawnWatchdog = setTimeout(onSpawnTimeout, SPAWN_TIMEOUT_MS);
   });
 
   // Auto-accept resource packs during configuration phase (1.20.2+)
@@ -1824,9 +1925,15 @@ async function connectBot(id, isReconnect) {
     }
   });
 
-  let hasSpawned = false;
-
   bot.once("spawn", () => {
+    clearSpawnWatchdog(entry);
+    // Since 1.21.4 vanilla defers block/item interactions until the client
+    // reports it finished loading. Mineflayer doesn't send this yet (upstream
+    // PR #3960 is still open), so without it our anti-AFK swings and /afk
+    // interactions can be silently dropped on 26.x servers.
+    if (bot.supportFeature && bot.supportFeature("sendsPlayerLoadedPacket")) {
+      try { bot._client.write("player_loaded", {}); } catch (_) {}
+    }
     entry.connectedAt = Date.now();
     entry.connectedUsername = bot.username;
     registerBotUsername(bot.username, entry.id);
@@ -1958,6 +2065,7 @@ async function connectBot(id, isReconnect) {
   });
 
   bot.on("kicked", (reason) => {
+    clearSpawnWatchdog(entry);
     const text = typeof reason === "string" ? reason : JSON.stringify(reason);
     entry.lastKickReason = text;
 
@@ -1981,6 +2089,7 @@ async function connectBot(id, isReconnect) {
   });
 
   bot.on("end", (reason) => {
+    clearSpawnWatchdog(entry);
     // Avoid double-fire if kicked already handled it
     if (entry.state === "disconnected") return;
     pushChat(entry, { sender: "System", message: `Disconnected: ${reason || "unknown"}`, type: "system" });
@@ -2211,7 +2320,7 @@ io.on("connection", (socket) => {
           pushChat(entry, { sender: entry.label, message: clean, type: "self" });
           mirrorBridgeChatToOtherSessions(entry.id, entry.label, clean);
         }
-      } else {
+      } else if (entry.bot) {
         entry.bot.chat(msg);
         pushChat(entry, {
           sender: entry.bot.username, message: msg,
