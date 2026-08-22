@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.2.0
+
+### Compatibility
+- **Minecraft 26.2 (protocol 776).** The server updated to Paper 26.2 and every session broke: 26.2 refuses handshakes claiming protocol 773–775 outright (verified with a raw status ping — 776 answers, 775/774/773 get the socket closed with no response), so the 26.1 client this app shipped in v2.1.0 could not get in at all. 26.2 isn't released in any PrismarineJS package yet — it exists only on three unmerged branches — so the stack is now pinned to them: `mineflayer` at `pc26_2` (PR #3926, commit `c77e6d5`), `minecraft-protocol` at `pc26_2` (PR #1496, commit `0dfb576`), and the 26.2 game data vendored from `minecraft-data`'s `pc_26_2` branch (PR #1219, commit `4dd8762`) under `vendor/minecraft-data-26.2/`. Note `mineflayer#pc26_2` trails master by six commits, but five are docs/CI and the sixth is the 26.1 data bump — nothing functional is lost.
+- **26.2 data is injected on `postinstall`.** `minecraft-data` already registers 26.2's metadata but ships no protocol schema, so `minecraft-data('26.2')` returns null and `minecraft-protocol` refuses to build a client. Version resolution runs through a *generated* `data.js`, so dropping the JSON in isn't enough — the generator has to re-run. `scripts/patch-mc-data-26.2.js` copies the two vendored files in, merges the `dataPaths` entry, regenerates `data.js`, and verifies the result in a clean process. It is idempotent and no-ops the moment `minecraft-data` ships real 26.2 support, so `vendor/`, `scripts/`, and the postinstall hook can simply be deleted at that point.
+
+### Fixes
+- **`update_time` no longer throws on every tick.** 26.1 reshaped the packet from `{ age, time, tickDayTime? }` to `{ age, clockUpdates: [{ id, totalTicks, partialTick, rate }] }`. Mineflayer's time plugin still reads `packet.time` and indexes into it, so on a 26.x server every `update_time` raised `TypeError: Cannot read properties of undefined (reading '0')` out of the packet handler — and servers send that packet on a timer, so it fired continuously. Upstream PR #3958 fixes it but is unmerged and lives in a third-party fork, so the logic is ported into `applyModernTimePacketFix()` instead of taking a dependency on someone else's branch. It replaces mineflayer's listener at connect time and handles both packet shapes; the legacy branch reproduces mineflayer's arithmetic exactly, so pre-26 servers behave identically.
+- **Docker build copies `vendor/` and `scripts/` before `npm install`.** The postinstall hook runs during install, so with the old copy order (source after dependencies) the build would have failed on a missing patch script.
+
 ## v2.1.0
 
 ### Compatibility

@@ -31,6 +31,8 @@ jobs:
             Dockerfile \
             .dockerignore \
             public/ \
+            scripts/ \
+            vendor/ \
             -x "public/node_modules/*"
 
       - name: Extract changelog for this version

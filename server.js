@@ -14,7 +14,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.2.0";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -121,6 +121,63 @@ function clearSpawnWatchdog(entry) {
     clearTimeout(entry.spawnWatchdog);
     entry.spawnWatchdog = null;
   }
+}
+
+// 26.1+ reshaped update_time from { age, time, tickDayTime? } to
+// { age, clockUpdates: [{ id, totalTicks, partialTick, rate }] }. Mineflayer's
+// time plugin still reads packet.time and indexes into it, so on a 26.x server
+// every single update_time throws a TypeError out of the packet handler — and
+// servers send that packet on a timer, so it fires forever. Upstream PR #3958
+// fixes it but is unmerged; until then, swap mineflayer's listener for one that
+// understands both shapes. Ported from that PR so behaviour matches once it lands.
+function applyModernTimePacketFix(entry, bot) {
+  const client = bot._client;
+  const listeners = client.listeners("update_time");
+  if (!listeners.length) return;
+
+  const toBigInt = (v) => {
+    if (typeof v === "bigint") return v;
+    if (typeof v === "number") return BigInt(Math.trunc(v));
+    if (Array.isArray(v)) return BigInt.asIntN(64, BigInt(v[0]) << 32n) | BigInt(v[1]);
+    return 0n;
+  };
+
+  // Take mineflayer's listener off up front. Deferring until we see a 26.x
+  // packet doesn't work: mineflayer registered first, so its handler already
+  // threw by the time ours runs. The legacy branch below reproduces its logic.
+  for (const fn of listeners) client.removeListener("update_time", fn);
+
+  client.on("update_time", (packet) => {
+    if (!packet) return;
+    try {
+      let time, age, doDaylightCycle;
+      if (packet.clockUpdates) {
+        age = toBigInt(packet.gameTime ?? packet.age ?? 0);
+        const clockId = bot.game?.dimension === "the_end" ? 1 : 0;
+        const clock = packet.clockUpdates.find(c => (c.id ?? c.clock) === clockId) ?? packet.clockUpdates[0];
+        time = toBigInt(clock?.totalTicks ?? 0);
+        doDaylightCycle = clock ? clock.rate !== 0 : true;
+      } else {
+        time = toBigInt(packet.time);
+        age = toBigInt(packet.age);
+        doDaylightCycle = packet.tickDayTime !== undefined ? !!packet.tickDayTime : time >= 0n;
+      }
+      const finalTime = doDaylightCycle ? time : (time < 0n ? -time : time);
+
+      bot.time.doDaylightCycle = doDaylightCycle;
+      bot.time.bigTime = finalTime;
+      bot.time.time = Number(finalTime);
+      bot.time.timeOfDay = bot.time.time % 24000;
+      bot.time.day = Math.floor(bot.time.time / 24000);
+      bot.time.isDay = bot.time.timeOfDay >= 0 && bot.time.timeOfDay < 13000;
+      bot.time.moonPhase = bot.time.day % 8;
+      bot.time.bigAge = age;
+      bot.time.age = Number(age);
+      bot.emit("time");
+    } catch (err) {
+      console.error(`[MC-Presence] [${entry.label}] update_time parse failed:`, err.message);
+    }
+  });
 }
 
 const app = express();
@@ -1849,6 +1906,8 @@ async function connectBot(id, isReconnect) {
 
   const bot = entry.bot;
   let hasSpawned = false;
+
+  applyModernTimePacketFix(entry, bot);
 
   // --- Connection diagnostics ---
   // Record which play-state packets actually arrive so a stalled login can be

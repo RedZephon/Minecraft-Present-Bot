@@ -1,18 +1,22 @@
 {
   "name": "mc-presence",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Multi-account headless Minecraft presence bot with AI chat and real-time web dashboard",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "node scripts/patch-mc-data-26.2.js"
   },
   "license": "MIT",
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "minecraft-data": "^3.113.2",
-    "mineflayer": "github:PrismarineJS/mineflayer#aa8fdfaf42d48f0be9d8fbde45eafd40fde4d134",
+    "mineflayer": "github:PrismarineJS/mineflayer#c77e6d5ac22d0efd9872fa7b5f9165e0b7a3d0c6",
     "socket.io": "^4.7.5",
-    "minecraft-protocol": "^1.67.0"
+    "minecraft-protocol": "github:PrismarineJS/node-minecraft-protocol#0dfb5768b444fd21e45135713edb2ed80279f696"
+  },
+  "overrides": {
+    "minecraft-protocol": "github:PrismarineJS/node-minecraft-protocol#0dfb5768b444fd21e45135713edb2ed80279f696"
   }
 }
