@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.2.1
+
+### Fixes
+- **Sessions showed "connecting…" while actually connected and playing — mineflayer's plugins were never attached.** `prismarine-chunk` keys its chunk implementations off the major version and has no `26.2` entry (1.19 through 26.1 all point at the same `pc/1.18/chunk`), and `prismarine-physics` gates its feature table the same way, so its `Physics` constructor threw `No liquid gravity settings`. Both throw inside mineflayer's *plugin injection*, which runs on a deferred tick from an event handler — so the exception never touched the connection. The bot logged in, held its slot, and played, while roughly every plugin after `blocks` in the load order failed to inject: no `health` plugin meant `update_health` had no listener and `spawn` could never fire, and no `game` plugin meant `bot.emit('login')` never fired either. `scripts/patch-26.2-support.js` now adds the missing `26.2` entries to both packages alongside the existing minecraft-data work. Neither package has a 26.2 branch upstream, so there was nothing to pin to.
+- **The spawn watchdog couldn't fire in exactly the case it was built for.** It armed on mineflayer's `login` event, which the `game` plugin re-emits — so when plugin injection died, the event never came and the watchdog never armed, leaving the session hanging silently forever. It now arms on the raw play-state `login` packet from minecraft-protocol, which is independent of mineflayer's plugin state. Its report also checks whether anything is actually listening on `update_health` and, when nothing is, names failed plugin injection and an unsupported `prismarine-*` version as the cause instead of blaming the packet stream.
+- **The `update_time` fix from v2.2.0 was a no-op.** It ran synchronously after `createBot()` to swap out mineflayer's listener, but mineflayer defers plugin injection to a later tick, so there was no listener to replace yet — it found an empty list and returned. It now runs on `inject_allowed`, after the plugins are in place. Verified against mineflayer's real plugin: the 26.x `clockUpdates` packet parses, the legacy shape is untouched, and `update_health` reaches `spawn`.
+
+### Notes
+- `scripts/patch-mc-data-26.2.js` is renamed to `scripts/patch-26.2-support.js` now that it covers three packages. Each patch is independent and idempotent and reports "already" once its package ships real 26.2 support — when all three say that, `vendor/`, the script, and the postinstall hook can be deleted together.
+
 ## v2.2.0
 
 ### Compatibility

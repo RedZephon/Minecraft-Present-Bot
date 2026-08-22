@@ -1,11 +1,11 @@
 {
   "name": "mc-presence",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Multi-account headless Minecraft presence bot with AI chat and real-time web dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "node scripts/patch-mc-data-26.2.js"
+    "postinstall": "node scripts/patch-26.2-support.js"
   },
   "license": "MIT",
   "dependencies": {

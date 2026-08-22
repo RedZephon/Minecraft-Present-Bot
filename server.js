@@ -14,7 +14,7 @@ const dns = require("dns");
 const path = require("path");
 const fs = require("fs");
 
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 
 // ---------------------------------------------------------------------------
 // SRV record resolution for Minecraft hostnames
@@ -1907,7 +1907,11 @@ async function connectBot(id, isReconnect) {
   const bot = entry.bot;
   let hasSpawned = false;
 
-  applyModernTimePacketFix(entry, bot);
+  // Mineflayer defers plugin injection to a later tick (loader.js emits
+  // "inject_allowed" from a setTimeout), so nothing is attached to _client yet.
+  // Our listener is registered after mineflayer's own, so it runs once the
+  // plugins are in place.
+  bot.once("inject_allowed", () => applyModernTimePacketFix(entry, bot));
 
   // --- Connection diagnostics ---
   // Record which play-state packets actually arrive so a stalled login can be
@@ -1931,9 +1935,17 @@ async function connectBot(id, isReconnect) {
     entry.spawnWatchdog = null;
     if (hasSpawned) return;
     const seen = trace.order.map(n => `${n}x${trace.counts.get(n)}`).join(", ") || "none";
-    const detail = trace.counts.has("update_health")
-      ? "update_health did arrive, so mineflayer stalled after it."
-      : "no update_health packet ever arrived, and mineflayer waits on that packet to emit spawn.";
+    // If mineflayer's plugins failed to inject, no listener is attached to
+    // update_health at all, so spawn can never fire no matter what arrives.
+    // Injection throws when a prismarine-* package doesn't recognise the
+    // version (prismarine-chunk and prismarine-physics both gate on it), which
+    // is the first thing that breaks on a new Minecraft release.
+    const pluginsAttached = bot._client.listenerCount("update_health") > 0;
+    const detail = !pluginsAttached
+      ? `mineflayer's plugins never attached — injection threw, most likely a prismarine-* package with no support for ${resolvedVersion}. Check the server log for a "No chunk implementation" or "liquid gravity" error.`
+      : trace.counts.has("update_health")
+        ? "update_health did arrive, so mineflayer stalled after it."
+        : "no update_health packet ever arrived, and mineflayer waits on that packet to emit spawn.";
     const msg = `Logged in but never spawned after ${Math.round(SPAWN_TIMEOUT_MS / 1000)}s — ${detail} Dropping the connection instead of hanging.`;
     pushChat(entry, { sender: "System", message: msg, type: "error" });
     console.error(`[MC-Presence] [${entry.label}] ${msg}`);
@@ -1960,14 +1972,21 @@ async function connectBot(id, isReconnect) {
     }
   });
 
+  // Arm the watchdog off the raw play-state login packet rather than
+  // mineflayer's "login" event. Mineflayer only re-emits that from its game
+  // plugin, so if plugin injection died the event never fires and the watchdog
+  // would never arm — exactly the case it exists to catch. The raw packet comes
+  // straight from minecraft-protocol and is independent of mineflayer's state.
+  // Arming here and not at connect time keeps MSA device-code auth, which can
+  // legitimately idle for minutes, from being timed out.
+  bot._client.on("login", () => {
+    clearSpawnWatchdog(entry);
+    entry.spawnWatchdog = setTimeout(onSpawnTimeout, SPAWN_TIMEOUT_MS);
+  });
+
   bot.on("login", () => {
     console.log(`[MC-Presence] [${entry.label}] Login event fired`);
     registerBotUsername(bot.username, entry.id);
-    // Arm the watchdog only once we're in the world — before this point the
-    // connection can legitimately sit idle for minutes waiting on MSA device
-    // -code auth, which must not be timed out.
-    clearSpawnWatchdog(entry);
-    entry.spawnWatchdog = setTimeout(onSpawnTimeout, SPAWN_TIMEOUT_MS);
   });
 
   // Auto-accept resource packs during configuration phase (1.20.2+)
