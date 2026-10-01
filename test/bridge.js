@@ -13,6 +13,7 @@ const path = require("path");
 const net = require("net");
 const http = require("http");
 const { spawn } = require("child_process");
+const { startFakeServer } = require("./fake-server");
 
 const ROOT = path.join(__dirname, "..");
 const SECRET = "bridge-test-secret";
@@ -52,7 +53,10 @@ function jsonServer(port, handler) {
 
 async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-presence-bridge-test-"));
-  const [webPort, pluginPort, discordPort, apiPort] = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  const [webPort, pluginPort, discordPort, apiPort, mcPort] = await Promise.all([freePort(), freePort(), freePort(), freePort(), freePort()]);
+  // A real-account session watches the game, like the operator's own accounts.
+  const fake = startFakeServer(mcPort);
+  await new Promise(r => fake.once("listening", r));
   const base = `http://127.0.0.1:${webPort}`;
 
   // Fake CobbleBridge plugin.
@@ -92,6 +96,7 @@ async function main() {
   }));
   fs.writeFileSync(path.join(dataDir, "bots.json"), JSON.stringify([
     { id: "cobblebot", label: "CobbleBot", botType: "bridge", mode: "manual", aiMode: "support" },
+    { id: "watcher", label: "Watcher", username: "Watcher", auth: "offline", mode: "manual", antiAfk: false },
   ]));
 
   const dash = spawn(process.execPath, [path.join(ROOT, "server.js")], {
@@ -103,6 +108,7 @@ async function main() {
       WEB_PORT: String(webPort),
       WEB_HOST: "127.0.0.1",
       MC_HOST: "127.0.0.1",
+      MC_PORT: String(mcPort),
       DASHBOARD_PASSWORD: "",
       ANTHROPIC_API_KEY: "test-key",
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${apiPort}`,
@@ -181,6 +187,36 @@ async function main() {
       await waitFor(() => output.includes("Discord webhook returned HTTP 500"), { what: "logged failure" });
     });
 
+    await test("with CMI cancelling chat events, the bot still hears chat through account sessions — once", async () => {
+      await fetch(`${base}/api/connect/watcher`, { method: "POST" });
+      await waitFor(async () => (await (await fetch(`${base}/api/status`)).json()).bots.find(b => b.id === "watcher").state === "connected", { what: "watcher connected" });
+      fake.addPlayer("Steve");
+      await sleep(1500);
+      api.respond = (r) => (trigger(r).includes("hello from the game") ? "Hey Steve, I hear you!" : "[silent]");
+      // CMI-formatted line in game; CobbleBridge sends nothing for it.
+      fake.system("[Member] Steve » @CobbleBot hello from the game");
+      await waitFor(() => plugin.chats.includes("Hey Steve, I hear you!"), { what: "reply via account session" });
+      // A late CobbleBridge event for the same line must not cause a second reply.
+      const requests = api.requests.length;
+      await event({ type: "player_chat", player: "Steve", message: "@CobbleBot hello from the game" });
+      await sleep(1500);
+      assert.strictEqual(api.requests.length, requests, "the same line was handled twice");
+      assert.strictEqual(plugin.chats.filter(c => c === "Hey Steve, I hear you!").length, 1);
+      // The bot's own broadcast, seen in game, isn't treated as someone talking.
+      fake.system("CobbleBot » Hey Steve, I hear you!");
+      await sleep(1000);
+      assert.strictEqual(api.requests.length, requests);
+    });
+
+    await test("the bridge session reports when the plugin last reached the app", async () => {
+      const s = (await (await fetch(`${base}/api/status`)).json()).bots.find(b => b.id === "cobblebot");
+      assert.ok(s.bridgeLastEventAt > 0);
+      await event({ type: "player_chat", player: "Steve", message: "x" }, "wrong");
+      const s2 = (await (await fetch(`${base}/api/status`)).json()).bots.find(b => b.id === "cobblebot");
+      assert.ok(s2.bridgeRejectedAt > 0);
+      assert.match(output, /Rejected a CobbleBridge event: wrong or missing secret/);
+    });
+
     await test("the dashboard log shows the bot as [Bot] CobbleBot", async () => {
       const log = (await (await fetch(`${base}/api/sessions/cobblebot/log`)).json()).chatLog;
       const line = log.find(m => m.message === "Yep, still here!");
@@ -189,6 +225,7 @@ async function main() {
   } finally {
     try { dash.kill("SIGKILL"); } catch (_) {}
     pluginServer.close();
+    fake.close();
     discordServer.close();
     apiServer.close();
     fs.rmSync(dataDir, { recursive: true, force: true });

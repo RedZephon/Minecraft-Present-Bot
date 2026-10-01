@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.5.1
+
+### Fixes
+- **Virtual (CobbleBridge) support bots didn't hear chat on servers running CMI or similar chat plugins.**
+  - A virtual bot has no game client; it heard chat only through CobbleBridge's chat events.
+  - CobbleBridge skips cancelled chat events, and CMI cancels Paper's chat event to broadcast its own format. So no chat ever reached the bot, and @mentions went unanswered.
+  - Chat seen by any connected real-account session is now handed to virtual AI bots too, and appears in their dashboard log.
+  - Each line is handled exactly once, even when CobbleBridge also reports it, possibly under the real name while in-game shows a nickname.
+- **Dashboard-typed messages on an account with "Support bot replies to this account" now reach virtual bots** even when no other session is online to see them.
+
+### Diagnostics
+- **Virtual sessions show "Plugin events: Xm ago / none yet" in Controls.** They also show a warning when CobbleBridge has never reached the app (check the plugin's `bot-app-url`), or when it's being refused for a wrong secret.
+- **Rejected plugin events are logged** (at most once a minute) with the fix.
+
 ## v2.5.0
 
 ### Fixes

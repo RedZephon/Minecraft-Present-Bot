@@ -925,6 +925,11 @@ function serializeBot(entry, opts = {}) {
     breaks: entry.breaks,
     onBreak: !!entry.onBreak,
     breakUntil: entry.breakUntil || null,
+    // CobbleBridge diagnostics (bridge sessions): when the plugin last
+    // reached the app, and whether it was turned away for a bad secret.
+    bridgeLastEventAt: entry.botType === "bridge" ? bridgeLastAt.any || null : undefined,
+    bridgeLastChatAt: entry.botType === "bridge" ? bridgeLastAt.chat || null : undefined,
+    bridgeRejectedAt: entry.botType === "bridge" ? bridgeRejectedAt || null : undefined,
     lastBreakAt: entry.lastBreakAt || null,
   };
   if (opts.includeLog) payload.chatLog = entry.chatLog;
@@ -1446,6 +1451,37 @@ function mirrorBridgeChatToOtherSessions(originBotId, senderLabel, message) {
     if (id === originBotId) continue;
     if (entry.state !== "connected") continue;
     pushChat(entry, { sender: senderLabel, message, type: "chat" });
+  }
+}
+
+// Public chat handed to virtual (CobbleBridge) sessions. They have no game
+// client, so they only hear what reaches the app — and the plugin's own chat
+// events can't be relied on: CobbleBridge skips cancelled chat events, and
+// chat plugins like CMI cancel Paper's event to broadcast their own format.
+// So chat seen by any real-account session is forwarded too. Keyed on the
+// text (not the sender) so a line reported both ways, possibly under a
+// nickname on one side, is handled exactly once.
+const recentBridgeDispatch = new Map(); // normalised text -> timestamp
+const BRIDGE_DISPATCH_WINDOW_MS = 10_000;
+
+function dispatchToBridgeBots(realName, message, { shown } = {}) {
+  const key = String(message || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!key) return;
+  const now = Date.now();
+  for (const [k, ts] of recentBridgeDispatch) if (now - ts > BRIDGE_DISPATCH_WINDOW_MS) recentBridgeDispatch.delete(k);
+  if (recentBridgeDispatch.has(key)) return;
+  recentBridgeDispatch.set(key, now);
+  for (const [, entry] of bots) {
+    if (entry.botType !== "bridge" || entry.state !== "connected") continue;
+    if (isThisBot(entry, realName)) continue;
+    pushChat(entry, {
+      sender: shown || realName,
+      realName: shown && shown.toLowerCase() !== realName.toLowerCase() ? realName : undefined,
+      message,
+      type: "chat",
+    });
+    if (/has made the advancement|has completed the challenge|has reached the goal/i.test(message)) continue;
+    handleAIChat(entry, realName, message, false);
   }
 }
 
@@ -2679,6 +2715,7 @@ async function connectBot(entry) {
     const fresh = !whisper && !fromBot ? recordChatLine(realName, message) : null;
     if (fromBot) return;
     if (fresh && /^\s*wb\s*[!.]?\s*$/i.test(message)) checkWbWatchers(realName);
+    if (!whisper) dispatchToBridgeBots(realName, message, { shown });
     if (!whisper && /has made the advancement|has completed the challenge|has reached the goal/i.test(message)) return;
     handleAIChat(entry, realName, message, whisper);
   };
@@ -3134,7 +3171,11 @@ io.on("connection", (socket) => {
         sender: entry.bot.username, message: msg,
         type: msg.startsWith("/") ? "command" : "self",
       });
-      if (!msg.startsWith("/")) recordChatLine(entry.bot.username, msg, { bot: !entry.aiReplies });
+      if (!msg.startsWith("/")) {
+        recordChatLine(entry.bot.username, msg, { bot: !entry.aiReplies });
+        // The account's own client never sees its line as someone else's chat.
+        if (entry.aiReplies) dispatchToBridgeBots(entry.bot.username, msg);
+      }
     }
   });
 
@@ -3337,8 +3378,14 @@ function bridgeSecretMatches(given) {
 
 app.post("/api/plugin-event", (req, res) => {
   if (!bridgeSecretMatches(req.headers["x-bridge-secret"])) {
+    bridgeRejectedAt = Date.now();
+    if (Date.now() - lastRejectLogAt > 60_000) {
+      lastRejectLogAt = Date.now();
+      console.warn("[MC-Presence] Rejected a CobbleBridge event: wrong or missing secret. The plugin's `secret` must match Settings → Bridge.");
+    }
     return res.status(403).json({ error: "unauthorized" });
   }
+  bridgeLastAt.any = Date.now();
 
   const event = req.body;
   if (!event || typeof event.type !== "string") {
@@ -3369,8 +3416,9 @@ app.post("/api/plugin-event", (req, res) => {
 
   // Once per event, not once per session.
   if (event.type === "player_chat" && isRealPlayer(event.player) && !isBotSpeaker(event.player, event.message) && event.message) {
-    recordChatLine(event.player, event.message);
-    if (/^\s*wb\s*[!.]?\s*$/i.test(event.message)) checkWbWatchers(event.player);
+    const fresh = recordChatLine(event.player, event.message);
+    if (fresh && /^\s*wb\s*[!.]?\s*$/i.test(event.message)) checkWbWatchers(event.player);
+    dispatchToBridgeBots(event.player, event.message);
   }
 
   // Route events to ALL connected bots with consistent formatting.
@@ -3404,19 +3452,10 @@ app.post("/api/plugin-event", (req, res) => {
         }
         break;
       }
-      case "player_chat": {
-        if (!isRealPlayer(event.player)) break;
-        // Only push chat for bridge bots — mineflayer bots get chat from bot.on("chat")
-        if (entry.botType === "bridge") {
-          pushChat(entry, { sender: event.player, message: event.message, type: "chat" });
-        }
-
-        if (!isBotSpeaker(event.player, event.message) && entry.botType === "bridge") {
-          if (/has made the advancement|has completed the challenge|has reached the goal/i.test(event.message)) break;
-          handleAIChat(entry, event.player, event.message, false);
-        }
+      case "player_chat":
+        // Handled once, below the loop (dispatchToBridgeBots); real-account
+        // sessions get chat from the game itself.
         break;
-      }
       case "player_advancement": {
         if (!isRealPlayer(event.player)) break;
         pushChat(entry, { sender: "Server", message: `${event.player} earned: ${event.advancement}`, type: "server" });
@@ -3441,7 +3480,9 @@ app.post("/api/plugin-event", (req, res) => {
 // the mineflayer server-broadcast parse is per-type so that a plugin which
 // only emits some events (e.g. quits but not joins) doesn't cause messages
 // to vanish entirely.
-const bridgeLastAt = { join: 0, quit: 0, chat: 0 };
+const bridgeLastAt = { join: 0, quit: 0, chat: 0, any: 0 };
+let bridgeRejectedAt = 0;
+let lastRejectLogAt = 0;
 const BRIDGE_ACTIVE_TTL_MS = 5 * 60 * 1000; // 5 min
 function isBridgeJoinActive() { return Date.now() - bridgeLastAt.join < BRIDGE_ACTIVE_TTL_MS; }
 function isBridgeQuitActive() { return Date.now() - bridgeLastAt.quit < BRIDGE_ACTIVE_TTL_MS; }

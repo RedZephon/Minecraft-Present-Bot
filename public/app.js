@@ -713,6 +713,17 @@ function renderBanners(bot) {
   if (bot.state === 'disconnected' && bot.lastKickReason && !bot.yieldedDuplicate) {
     banners.push(`<div class="banner danger"><i class="fa-solid fa-circle-exclamation"></i> Last kick: ${esc(bot.lastKickReason)}</div>`);
   }
+  if (bot.botType === 'bridge' && bot.state === 'connected') {
+    const rejectedRecently = bot.bridgeRejectedAt && Date.now() - bot.bridgeRejectedAt < 10 * 60 * 1000;
+    const hasPlayerSessions = Object.values(state.bots).some(b => (b.botType || 'mineflayer') === 'mineflayer' && b.state === 'connected');
+    if (rejectedRecently) {
+      banners.push(`<div class="banner danger"><i class="fa-solid fa-key"></i> CobbleBridge is sending events with the wrong secret, so they're being refused. Make the plugin's <code>secret</code> match Settings → Bridge.</div>`);
+    } else if (!bot.bridgeLastEventAt && uptimeOf(bot) > 2 * 60 * 1000) {
+      banners.push(`<div class="banner warning"><i class="fa-solid fa-plug-circle-exclamation"></i> No events from the CobbleBridge plugin yet. Check its <code>bot-app-url</code> points at this app. ${hasPlayerSessions
+        ? 'Chat still reaches this bot through your connected account sessions.'
+        : 'Until then this bot only hears chat when one of your account sessions is connected.'}</div>`);
+    }
+  }
   if (bot.state === 'disconnected' && (bot.botType || 'mineflayer') === 'mineflayer' && !bot.username) {
     banners.push(`<div class="banner warning"><i class="fa-solid fa-triangle-exclamation"></i> Add the account in <button class="link-btn" data-action="details-tab" data-tab="setup">Setup</button> before connecting.</div>`);
   }
@@ -765,6 +776,7 @@ function renderControlsTab(bot) {
         <div class="info-row"><span class="label">Uptime</span><span class="value" id="detailUptime">${isConnected ? esc(formatUptimeFull(uptimeOf(bot))) : '--'}</span></div>
         <div class="info-row"><span class="label">Latency</span><span class="value" id="detailLatency">${isConnected && metrics.latency ? metrics.latency + 'ms' : '--'}</span></div>
         ${isMineflayer && bot.connectedUsername ? `<div class="info-row"><span class="label">MC Username</span><span class="value">${esc(bot.connectedUsername)}</span></div>` : ''}
+        ${bot.botType === 'bridge' ? `<div class="info-row"><span class="label">Plugin events</span><span class="value">${esc(bot.bridgeLastEventAt ? formatRelativeAgo(bot.bridgeLastEventAt) : 'none yet')}</span></div>` : ''}
         ${bot.detectedVersion ? `<div class="info-row"><span class="label">Joined as</span><span class="value">${esc(bot.detectedVersion)}</span></div>` : ''}
         ${breaksOn || bot.lastBreakAt ? `<div class="info-row"><span class="label">Last Break</span><span class="value">${esc(bot.lastBreakAt ? formatRelativeAgo(bot.lastBreakAt) : 'Never')}</span></div>` : ''}
       </div>
