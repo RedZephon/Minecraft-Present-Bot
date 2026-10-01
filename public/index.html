@@ -3,36 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
   <title>MC Presence</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icon-180.png" />
+  <meta name="theme-color" content="#0b0d10" />
 
-  <!-- FOUC prevention: set theme before CSS loads -->
-  <script>
-    (function(){
-      var t = localStorage.getItem('mcpresence:theme');
-      if (!t) t = matchMedia('(prefers-color-scheme:light)').matches ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', t);
-    })();
-  </script>
+  <script src="/theme.js?v=__APP_VERSION__"></script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" referrerpolicy="no-referrer">
   <link rel="stylesheet" href="/app.css?v=__APP_VERSION__">
 </head>
 <body>
+
+<div class="offline-banner" role="status">Lost connection to the MC Presence server — reconnecting…</div>
 
 <div class="app">
 
   <!-- ───────── TOP NAV ───────── -->
   <nav class="topnav">
     <div class="topnav-left">
-      <button class="icon-btn mobile-sidebar-btn" id="btnMobileSidebar" title="Sessions"><i class="fa-solid fa-bars"></i></button>
+      <button class="icon-btn mobile-sidebar-btn" data-action="open-mobile-sidebar" title="Sessions" aria-label="Sessions"><i class="fa-solid fa-bars"></i></button>
       <div class="logo">
         <div class="logo-mark"><i class="fa-solid fa-signal"></i></div>
         MC Presence
       </div>
-      <button class="search-trigger" id="cmdPaletteBtn" title="Command palette">
+      <button class="search-trigger" data-action="command-palette" title="Command palette">
         <i class="fa-solid fa-magnifying-glass" style="font-size: 11px;"></i>
         <span>Search sessions, commands...</span>
         <span class="kbd">&#8984;K</span>
@@ -40,11 +40,14 @@
     </div>
     <div class="topnav-right">
       <div class="theme-toggle" role="group" aria-label="Theme">
-        <button data-theme-btn="light"><i class="fa-solid fa-sun"></i></button>
-        <button data-theme-btn="dark"><i class="fa-solid fa-moon"></i></button>
+        <button data-action="theme" data-theme-btn="light" aria-label="Light theme"><i class="fa-solid fa-sun"></i></button>
+        <button data-action="theme" data-theme-btn="dark" aria-label="Dark theme"><i class="fa-solid fa-moon"></i></button>
       </div>
-      <button class="icon-btn mobile-details-btn" id="btnMobileDetails" title="Details"><i class="fa-solid fa-circle-info"></i></button>
-      <button class="icon-btn" id="btnSettings" title="Settings"><i class="fa-solid fa-gear"></i></button>
+      <button class="icon-btn mobile-details-btn" data-action="open-mobile-details" title="Details" aria-label="Session details"><i class="fa-solid fa-circle-info"></i></button>
+      <button class="icon-btn" data-action="open-settings" title="Settings" aria-label="Settings"><i class="fa-solid fa-gear"></i></button>
+      <form id="logoutForm" method="post" action="/logout" hidden>
+        <button class="icon-btn" type="submit" title="Sign out" aria-label="Sign out"><i class="fa-solid fa-right-from-bracket"></i></button>
+      </form>
       <span class="version-badge" id="appVersion"></span>
     </div>
   </nav>
@@ -53,17 +56,17 @@
   <div class="workspace" id="workspace">
 
     <!-- LEFT SIDEBAR -->
-    <aside class="sidebar">
+    <aside class="sidebar" aria-label="Sessions">
       <div class="sidebar-section">
         <div class="section-label">
           Your Sessions
-          <button class="add" id="btnAddSession" title="New session"><i class="fa-solid fa-plus"></i></button>
+          <button class="add" data-action="add-session" title="New session" aria-label="New session"><i class="fa-solid fa-plus"></i></button>
         </div>
         <div class="session-list" id="sessionList"></div>
       </div>
 
       <div class="sidebar-section">
-        <div class="section-label">Connected Server</div>
+        <div class="section-label">Server</div>
       </div>
       <div class="server-card" id="serverCard">
         <div class="server-head">
@@ -76,7 +79,7 @@
         <div class="server-stats">
           <div class="stat">
             <div class="stat-label">Status</div>
-            <div class="stat-value" id="serverStatus"><span class="live"></span>Offline</div>
+            <div class="stat-value" id="serverStatus">Offline</div>
           </div>
           <div class="stat">
             <div class="stat-label">Players</div>
@@ -93,33 +96,27 @@
         </div>
       </div>
 
-      <div class="sidebar-section" id="playerListSection" style="display:none;">
-        <div class="section-label">Online Players <span id="playerListCount" style="font-size:10px;opacity:0.6;"></span></div>
+      <div class="sidebar-section" id="playerListSection" hidden>
+        <div class="section-label">Online Players <span id="playerListCount" class="count-pill"></span></div>
         <div class="player-list" id="playerList"></div>
       </div>
-
-      <!-- footer removed: theme toggle + settings moved to topnav -->
     </aside>
 
     <!-- CENTER: CHAT -->
     <main class="chat" id="chatArea">
       <div class="chat-header" id="chatHeader">
-        <div class="speaking-as" id="speakingAs">
-          <div class="empty-state" style="padding:16px;">
-            <p style="margin:0;">No active session</p>
-          </div>
-        </div>
+        <div class="speaking-as" id="speakingAs"></div>
         <div class="chat-actions" id="chatActions"></div>
       </div>
-      <div class="chat-log" id="chatLog"></div>
-      <div class="chat-input-wrap" id="chatInputWrap" style="position:relative;">
+      <div class="chat-log" id="chatLog" role="log" aria-live="polite"></div>
+      <div class="chat-input-wrap" id="chatInputWrap">
         <div class="chat-input">
           <div class="input-tools">
-            <button title="Commands" id="btnSlash"><i class="fa-solid fa-slash"></i></button>
-            <button title="Mention" id="btnMention"><i class="fa-solid fa-at"></i></button>
+            <button id="btnSlash" data-action="slash" title="Commands" aria-label="Insert command"><i class="fa-solid fa-slash"></i></button>
+            <button id="btnMention" data-action="mention" title="Mention" aria-label="Insert mention"><i class="fa-solid fa-at"></i></button>
           </div>
-          <input type="text" id="chatInput" placeholder="Select a session to chat..." disabled />
-          <button class="send-btn" id="btnSend" disabled>Send <i class="fa-solid fa-paper-plane" style="font-size: 10px;"></i></button>
+          <input type="text" id="chatInput" placeholder="Select a session to chat..." maxlength="256" autocomplete="off" aria-label="Chat message" disabled />
+          <button class="send-btn" id="btnSend" data-action="send" disabled>Send <i class="fa-solid fa-paper-plane" style="font-size: 10px;"></i></button>
         </div>
         <div class="input-hint">
           <span>Type <kbd>/</kbd> for commands &middot; <kbd>@</kbd> to mention</span>
@@ -130,10 +127,10 @@
     </main>
 
     <!-- RIGHT: DETAILS -->
-    <aside class="details" id="detailsPanel">
+    <aside class="details" id="detailsPanel" aria-label="Session details">
       <div class="details-header">
         <h3>Session Details</h3>
-        <button class="icon-btn" id="btnCloseDetails" title="Close"><i class="fa-solid fa-xmark"></i></button>
+        <button class="icon-btn" data-action="close-details" title="Close" aria-label="Close details"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div id="detailsContent"></div>
     </aside>
@@ -142,23 +139,23 @@
 </div>
 
 <!-- ───────── SETTINGS PAGE (full-screen) ───────── -->
-<div class="settings-page" id="settingsPage" style="display:none;">
+<div class="settings-page" id="settingsPage" role="dialog" aria-modal="true" aria-label="Settings" hidden>
   <nav class="topnav">
     <div class="topnav-left">
-      <button class="btn" id="btnSettingsBack" style="gap:6px;"><i class="fa-solid fa-arrow-left"></i> Back</button>
-      <span style="font-weight:700;font-size:15px;">Settings</span>
+      <button class="btn" id="btnSettingsBack" data-action="close-settings"><i class="fa-solid fa-arrow-left"></i> Back</button>
+      <span class="settings-title">Settings</span>
     </div>
     <div class="topnav-right">
-      <button class="btn" id="btnSettingsCancel">Cancel</button>
-      <button class="btn primary" id="btnSettingsSave">Save</button>
+      <button class="btn" data-action="close-settings">Cancel</button>
+      <button class="btn primary" id="btnSettingsSave" data-action="save-settings">Save</button>
     </div>
   </nav>
   <div class="settings-layout">
-    <aside class="settings-sidebar">
-      <button class="settings-tab active" data-tab="general"><i class="fa-solid fa-sliders"></i> General</button>
-      <button class="settings-tab" data-tab="ai"><i class="fa-solid fa-robot"></i> AI Chat</button>
-      <button class="settings-tab" data-tab="prompts"><i class="fa-solid fa-message"></i> Prompts</button>
-      <button class="settings-tab" data-tab="bridge"><i class="fa-solid fa-plug"></i> Bridge</button>
+    <aside class="settings-sidebar" role="tablist">
+      <button class="settings-tab active" role="tab" aria-selected="true" data-tab="general"><i class="fa-solid fa-sliders"></i> General</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="ai"><i class="fa-solid fa-robot"></i> AI Chat</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="prompts"><i class="fa-solid fa-message"></i> Prompts</button>
+      <button class="settings-tab" role="tab" aria-selected="false" data-tab="bridge"><i class="fa-solid fa-plug"></i> Bridge</button>
     </aside>
     <div class="settings-body">
 
@@ -166,54 +163,62 @@
       <div class="settings-pane active" data-pane="general">
         <div class="settings-pane-header">
           <h2>General</h2>
-          <p>Server defaults, maintenance, and reconnect behavior.</p>
+          <p>Server address, maintenance window, and reconnect behavior.</p>
+        </div>
+        <div class="banner warning" id="authWarning" hidden>
+          <div><i class="fa-solid fa-lock-open"></i> <strong>This dashboard has no password.</strong> Anyone who can reach it can chat and run commands as your accounts. Set <code>DASHBOARD_PASSWORD</code> in the environment and restart.</div>
         </div>
         <div class="settings-section">
           <h3>Features</h3>
           <div class="toggle-row" style="border:0;padding:0;">
             <div class="toggle-info">
-              <div class="toggle-title">AI Chat Features</div>
-              <div class="toggle-desc">Enable AI-powered chat modes (AFK responder, support bot, player disguise). Requires an Anthropic API key.</div>
+              <div class="toggle-title">AI chat features</div>
+              <div class="toggle-desc">AFK responder, support bot and player disguise. Requires an Anthropic API key.</div>
             </div>
-            <div class="toggle" id="sAiEnabledToggle"></div>
+            <button class="toggle" id="sAiEnabledToggle" role="switch" aria-checked="true" aria-label="AI chat features" data-action="settings-ai-toggle"></button>
           </div>
         </div>
         <div class="settings-section">
-          <h3>Default Server</h3>
+          <h3>Server</h3>
           <div class="field">
-            <label>Server Name</label>
-            <input type="text" id="sServerName" placeholder="My Server" />
-            <div class="field-note">Display name shown in the sidebar.</div>
+            <label for="sServerName">Display name</label>
+            <input type="text" id="sServerName" maxlength="80" placeholder="My Server" />
           </div>
           <div class="field-row">
-            <div class="field"><label>Host</label><input type="text" id="sDefaultHost" /></div>
-            <div class="field"><label>Port</label><input type="text" id="sDefaultPort" /></div>
+            <div class="field"><label for="sDefaultHost">Host</label><input type="text" id="sDefaultHost" spellcheck="false" placeholder="play.example.net" /></div>
+            <div class="field"><label for="sDefaultPort">Port</label><input type="number" id="sDefaultPort" min="1" max="65535" /></div>
+          </div>
+          <div class="field-note">Every session connects here. SRV records are resolved automatically.</div>
+          <div class="field"><label for="sTimezone">Server timezone</label><input type="text" id="sTimezone" list="tzList" spellcheck="false" />
+            <div class="field-note">Used for the maintenance window, player-activity predictions and the times the AI tells players.</div>
           </div>
         </div>
         <div class="settings-section">
-          <h3>Maintenance Window</h3>
-          <div class="field-note" style="margin-bottom:10px;">Bots wait until the window ends before reconnecting.</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-            <input type="checkbox" id="sMaintenanceEnabled" style="accent-color:var(--accent);width:15px;height:15px;" />
-            <span style="font-size:13px;color:var(--text-secondary);">Enable maintenance window</span>
-          </div>
+          <h3>Maintenance window</h3>
+          <div class="field-note" style="margin-bottom:10px;">During this window, sessions wait for it to end instead of reconnecting.</div>
+          <label class="check-row"><input type="checkbox" id="sMaintenanceEnabled" /> Enable maintenance window</label>
           <div class="field-row">
-            <div class="field"><label>Window Start</label><input type="time" id="sMaintenanceStart" value="01:59" /></div>
-            <div class="field"><label>Window End</label><input type="time" id="sMaintenanceEnd" value="02:05" /></div>
+            <div class="field"><label for="sMaintenanceStart">Start</label><input type="time" id="sMaintenanceStart" /></div>
+            <div class="field"><label for="sMaintenanceEnd">End</label><input type="time" id="sMaintenanceEnd" /></div>
           </div>
         </div>
         <div class="settings-section">
           <h3>Reconnect</h3>
           <div class="field-row">
-            <div class="field"><label>Base Delay (sec)</label><input type="number" id="sReconnectBase" value="10" min="1" max="300" /></div>
-            <div class="field"><label>Max Delay (sec)</label><input type="number" id="sReconnectMax" value="120" min="10" max="600" /></div>
+            <div class="field"><label for="sReconnectBase">Base delay (sec)</label><input type="number" id="sReconnectBase" min="1" max="3600" /></div>
+            <div class="field"><label for="sReconnectMax">Max delay (sec)</label><input type="number" id="sReconnectMax" min="1" max="86400" /></div>
           </div>
-          <div class="field"><label>Max Retries</label><input type="number" id="sReconnectRetries" value="20" min="1" max="100" /></div>
+          <div class="field"><label for="sReconnectRetries">Fast retries</label><input type="number" id="sReconnectRetries" min="1" max="1000" />
+            <div class="field-note">After this many failed attempts, sessions keep retrying every 10 minutes.</div>
+          </div>
         </div>
         <div class="settings-section">
-          <h3>Account</h3>
-          <div class="field"><label>Owner Username</label><input type="text" id="sOwnerUsername" placeholder="Your MC username" />
-            <div class="field-note">Used for admin commands in AI chat.</div>
+          <h3>Owner &amp; staff</h3>
+          <div class="field"><label for="sOwnerUsername">Your Minecraft username</label><input type="text" id="sOwnerUsername" maxlength="16" spellcheck="false" placeholder="Steve" />
+            <div class="field-note">Only this account can use the AFK Responder. You can also silence or resume the support bot from in-game chat.</div>
+          </div>
+          <div class="field"><label for="sStaff">Other staff</label><input type="text" id="sStaff" spellcheck="false" placeholder="LadyZephon, SmoothObsidian" />
+            <div class="field-note">Comma-separated. The bot treats what staff say as reliable, and leaves staff out of "when are players usually on" predictions.</div>
           </div>
         </div>
       </div>
@@ -225,33 +230,73 @@
           <p>API configuration, response behavior, and server context.</p>
         </div>
         <div class="settings-section">
-          <h3>API Configuration</h3>
+          <h3>API</h3>
           <div class="field">
-            <label>Anthropic API Key</label>
-            <input type="text" id="sAiApiKey" placeholder="sk-ant-..." />
-            <div class="field-note">Required for AI chat modes.</div>
+            <label for="sAiApiKey">Anthropic API key</label>
+            <div class="secret-input">
+              <input type="password" id="sAiApiKey" autocomplete="off" spellcheck="false" data-empty-placeholder="sk-ant-..." />
+              <button class="btn" data-action="reveal-secret" data-target="sAiApiKey" title="Show / hide" aria-label="Show or hide API key"><i class="fa-solid fa-eye"></i></button>
+              <button class="btn danger" data-action="clear-secret" data-target="sAiApiKey" hidden>Remove</button>
+            </div>
+            <div class="field-note">Stored on the server only. It's never sent back to the browser.</div>
           </div>
           <div class="field">
-            <label>Model</label>
-            <input type="text" id="sAiModel" value="claude-haiku-4-5-20251001" />
+            <label for="sAiModel">Model</label>
+            <input type="text" id="sAiModel" list="modelList" spellcheck="false" />
           </div>
         </div>
         <div class="settings-section">
           <h3>Behavior</h3>
           <div class="field-row">
-            <div class="field"><label>Cooldown (seconds)</label><input type="number" id="sAiCooldown" value="15" min="1" max="300" />
-              <div class="field-note">Per-player cooldown between AI responses.</div>
+            <div class="field"><label for="sAiCooldown">Cooldown (seconds)</label><input type="number" id="sAiCooldown" min="0" max="3600" />
+              <div class="field-note">Per-player gap between AI replies.</div>
             </div>
-            <div class="field"><label>Response Delay (ms)</label><input type="number" id="sAiResponseDelay" value="2000" min="500" max="10000" step="500" />
-              <div class="field-note">Base delay before responding. Randomized up to 50% extra.</div>
+            <div class="field"><label for="sAiResponseDelay">Response delay (ms)</label><input type="number" id="sAiResponseDelay" min="0" max="60000" step="250" />
+              <div class="field-note">"Typing" delay before replying, plus up to 50% random.</div>
             </div>
           </div>
         </div>
         <div class="settings-section">
-          <h3>Server Info</h3>
-          <div class="field">
-            <textarea id="sAiServerInfo" placeholder="Describe your server — rules, features, commands, etc. This info is given to the AI." style="min-height:160px;"></textarea>
+          <h3>Support bot</h3>
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <div class="toggle-title">Join in when it can help</div>
+              <div class="toggle-desc">Answers open questions nobody else is answering ("does anyone know how to…"), and follow-ups in conversations it's part of. It stays out of players' own conversations. Off: it only answers @mentions and whispers.</div>
+            </div>
+            <button class="toggle" id="sAiJoinConversations" role="switch" aria-checked="true" aria-label="Join in when it can help" data-action="settings-toggle"></button>
           </div>
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <div class="toggle-title">Learn from chat</div>
+              <div class="toggle-desc">Keeps notes of announcements and plans mentioned in chat, especially by staff, so it can say things like "RedZephon mentioned that's coming soon". Review them below.</div>
+            </div>
+            <button class="toggle" id="sAiLearnFromChat" role="switch" aria-checked="true" aria-label="Learn from chat" data-action="settings-toggle"></button>
+          </div>
+          <div class="field" style="margin-top:14px;">
+            <label for="sAiQuietMessage">Why the server is quiet</label>
+            <textarea id="sAiQuietMessage" rows="2" maxlength="500"></textarea>
+            <div class="field-note">When someone joins and nobody else is on, the support bot welcomes them, explains this, and says when people are usually on.</div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>Server info</h3>
+          <div class="field">
+            <textarea id="sAiServerInfo" aria-label="Server info" placeholder="Describe your server — rules, features, commands, where things are. Given to the support bot." style="min-height:160px;"></textarea>
+            <div class="field-note">Plugin names are read from CobbleBridge automatically; the bot can also read plugin configs when it needs details.</div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>Learned from chat</h3>
+          <div class="field-note" style="margin-bottom:10px;">What the support bot has picked up. Delete anything wrong or out of date, or add facts yourself. Changes apply immediately.</div>
+          <div id="notesList" class="notes-list"></div>
+          <div class="note-add">
+            <input type="text" id="noteInput" maxlength="300" placeholder="e.g. The spawn shop moved to the market district" aria-label="New note" />
+            <button class="btn" data-action="add-note"><i class="fa-solid fa-plus"></i> Add</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>Player activity</h3>
+          <div id="activityPanel" class="activity-panel">Loading…</div>
         </div>
       </div>
 
@@ -259,12 +304,21 @@
       <div class="settings-pane" data-pane="prompts">
         <div class="settings-pane-header">
           <h2>AI Prompts</h2>
-          <p>Customize how the AI behaves in each mode. Use <code style="font-family:var(--mono);color:var(--accent);">{botName}</code> for the MC username. Leave blank to use defaults.</p>
+          <p>Customize how the AI behaves in each mode. <code>{botName}</code> is replaced with the Minecraft username. A prompt left unchanged follows the built-in default as it improves.</p>
         </div>
         <div class="settings-section">
-          <div class="field"><label>Admin AFK Prompt</label><textarea id="sAiAdminPrompt" placeholder="Leave blank for default." style="min-height:140px;"></textarea></div>
-          <div class="field"><label>Support Bot Prompt</label><textarea id="sAiSupportPrompt" placeholder="Leave blank for default." style="min-height:140px;"></textarea></div>
-          <div class="field"><label>Disguise Prompt</label><textarea id="sAiDisguisePrompt" placeholder="Leave blank for default." style="min-height:140px;"></textarea></div>
+          <div class="field">
+            <div class="label-row"><label for="sAiAdminPrompt">AFK responder</label><button class="link-btn" data-action="reset-prompt" data-target="sAiAdminPrompt">Reset to default</button></div>
+            <textarea id="sAiAdminPrompt" style="min-height:140px;"></textarea>
+          </div>
+          <div class="field">
+            <div class="label-row"><label for="sAiSupportPrompt">Support bot</label><button class="link-btn" data-action="reset-prompt" data-target="sAiSupportPrompt">Reset to default</button></div>
+            <textarea id="sAiSupportPrompt" style="min-height:140px;"></textarea>
+          </div>
+          <div class="field">
+            <div class="label-row"><label for="sAiDisguisePrompt">Player disguise</label><button class="link-btn" data-action="reset-prompt" data-target="sAiDisguisePrompt">Reset to default</button></div>
+            <textarea id="sAiDisguisePrompt" style="min-height:140px;"></textarea>
+          </div>
         </div>
       </div>
 
@@ -272,19 +326,33 @@
       <div class="settings-pane" data-pane="bridge">
         <div class="settings-pane-header">
           <h2>CobbleBridge</h2>
-          <p>Connect to the CobbleBridge Paper plugin for virtual player support and config reading.</p>
+          <p>Connect to the CobbleBridge Paper plugin for virtual players, live server events, and config reading.</p>
+        </div>
+        <div class="banner warning" id="bridgeSecretWarning" hidden>
+          <div><i class="fa-solid fa-triangle-exclamation"></i> <strong>The shared secret is still the default.</strong> Anyone who can reach this dashboard can inject fake player events. Generate a new one and set the same value in the plugin.</div>
+          <button class="btn" data-action="generate-secret"><i class="fa-solid fa-key"></i> Generate</button>
         </div>
         <div class="settings-section">
-          <h3>Plugin Connection</h3>
-          <div class="field-row">
-            <div class="field"><label>Plugin URL</label><input type="text" id="sBridgeUrl" placeholder="http://localhost:3101" /></div>
-            <div class="field"><label>Shared Secret</label><input type="text" id="sBridgeSecret" placeholder="changeme" /></div>
+          <h3>Plugin connection</h3>
+          <div class="field"><label for="sBridgeUrl">Plugin URL</label><input type="url" id="sBridgeUrl" spellcheck="false" placeholder="http://localhost:3101" /></div>
+          <div class="field">
+            <label for="sBridgeSecret">Shared secret</label>
+            <div class="secret-input">
+              <input type="password" id="sBridgeSecret" autocomplete="off" spellcheck="false" />
+              <button class="btn" data-action="reveal-secret" data-target="sBridgeSecret" aria-label="Show or hide secret"><i class="fa-solid fa-eye"></i></button>
+              <button class="btn" data-action="generate-secret" title="Generate a random secret" aria-label="Generate secret"><i class="fa-solid fa-key"></i></button>
+            </div>
+            <div class="field-note">Must match the plugin's config. Plugin events are refused until one is set.</div>
           </div>
         </div>
         <div class="settings-section">
-          <h3>Discord Integration</h3>
-          <div class="field"><label>Discord Webhook URL</label><input type="text" id="sBridgeDiscord" placeholder="https://discord.com/api/webhooks/..." />
-            <div class="field-note">Bot messages will also be sent to this Discord channel.</div>
+          <h3>Discord</h3>
+          <div class="field"><label for="sBridgeDiscord">Webhook URL</label>
+            <div class="secret-input">
+              <input type="password" id="sBridgeDiscord" autocomplete="off" spellcheck="false" data-empty-placeholder="https://discord.com/api/webhooks/..." />
+              <button class="btn danger" data-action="clear-secret" data-target="sBridgeDiscord" hidden>Remove</button>
+            </div>
+            <div class="field-note">Messages from virtual (bridge) sessions are posted here. Real accounts are already mirrored by your server's own Discord bridge.</div>
           </div>
         </div>
       </div>
@@ -295,10 +363,10 @@
 
 <!-- ───────── CONFIRM MODAL ───────── -->
 <div class="modal-overlay" id="confirmModalOverlay">
-  <div class="modal" style="width:380px;text-align:center;">
+  <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
     <h2 id="confirmTitle">Are you sure?</h2>
-    <p id="confirmMessage" style="color:var(--text-secondary);font-size:13px;margin-bottom:20px;"></p>
-    <div class="modal-actions" style="justify-content:center;">
+    <p id="confirmMessage"></p>
+    <div class="modal-actions">
       <button class="btn" id="btnConfirmCancel">Cancel</button>
       <button class="btn danger" id="btnConfirmOk">Confirm</button>
     </div>
@@ -307,21 +375,21 @@
 
 <!-- ───────── COMMAND PALETTE ───────── -->
 <div class="modal-overlay" id="cmdPaletteOverlay">
-  <div class="command-palette">
+  <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
     <div class="command-palette-input">
       <i class="fa-solid fa-magnifying-glass"></i>
-      <input type="text" id="cmdPaletteInput" placeholder="Type a command or search..." />
+      <input type="text" id="cmdPaletteInput" placeholder="Type a command or search..." aria-label="Search commands" autocomplete="off" />
     </div>
-    <div class="command-list" id="cmdPaletteList"></div>
+    <div class="command-list" id="cmdPaletteList" role="listbox"></div>
   </div>
 </div>
 
 <!-- ───────── MOBILE OVERLAYS ───────── -->
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<div class="details-overlay" id="detailsOverlay"></div>
+<div class="sidebar-overlay" id="sidebarOverlay" data-action="close-mobile-sidebar"></div>
+<div class="details-overlay" id="detailsOverlay" data-action="close-mobile-details"></div>
 
 <!-- ───────── TOAST ───────── -->
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app.js?v=__APP_VERSION__"></script>

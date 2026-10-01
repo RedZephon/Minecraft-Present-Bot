@@ -23,6 +23,8 @@ jobs:
         run: |
           zip -r mc-presence-${{ steps.version.outputs.VERSION }}.zip \
             server.js \
+            lib/ \
+            views/ \
             package.json \
             package-lock.json \
             .env.example \

@@ -1,5 +1,178 @@
 # Changelog
 
+## v2.4.0
+
+### Support bot
+- **Reads the room.**
+  - It now sees the recent public chat (one shared, de-duplicated transcript), who's online, and why it's being asked, and decides whether to reply.
+  - It replies when spoken to, when it's whispered, when someone follows up on something it said, or when an open question goes unanswered ("does anyone know how to…").
+  - It stays out of conversations between players: a message that names another player, or follows straight on from another player's line, is left alone.
+  - Ordinary banter never reaches the model, so it costs nothing.
+  - Toggle: Settings → AI Chat → "Join in when it can help". With it off, the bot only answers @mentions and whispers.
+- **Choosing silence is silent.**
+  - The model answers `[silent]` when it shouldn't speak.
+  - Anything that narrates staying quiet ("players are talking to each other, I'll stay out of it") or reads like a stage direction is also caught and never sent.
+- **Learns from chat.**
+  - Every few minutes, durable facts are pulled from chat into a notebook: announcements, upcoming updates, rule changes, where things are.
+  - Staff statements are treated as reliable; player claims are attributed.
+  - Jokes, personal info, base locations and anything telling the bot what to do are ignored.
+  - The bot uses the notes like a staff member would ("RedZephon mentioned the other day it's coming soon").
+  - Review, delete or add notes in Settings → AI Chat → Learned from chat.
+- **Welcomes players to an empty server.**
+  - When someone joins and nobody else is on, the bot explains why it's quiet (editable; defaults to "a small, self-hosted passion project") and says when people are usually on.
+  - New players get a full welcome; returning players get a one-line heads-up at most every 12 hours.
+  - Staff aren't welcomed to their own server, and with several support sessions only one greets.
+- **Knows when players are usually on.**
+  - Player sessions are tracked over time in `data/activity.json`, along with when a bot was actually watching, so the bot being offline never reads as the server being empty.
+  - From the last four weeks it predicts the next likely time someone's on, leaving out the owner and staff.
+  - See it in Settings → AI Chat → Player activity.
+- **Better informed.**
+  - Each reply includes the server info, the installed plugins (from CobbleBridge, refreshed hourly), the learned notes, the staff list, the online list and the current time in the server's timezone.
+  - The default prompts are rewritten around all this. Saved prompts that were verbatim copies of the previous defaults are migrated, so they pick up the new behaviour.
+- **The canned "need help? type @bot" offers are gone.** The bot just helps when it can.
+
+### Modes
+- **New "AFK" mode for any account.** It turns `/afk` on while connected, turns it off when you switch away, sends no replies, and pauses anti-AFK. It works with AI features switched off.
+- **The AFK Responder is reserved for the owner's account.**
+  - Other accounts can't select it.
+  - A session already set to it on another account runs as plain AFK and says so.
+  - Set your username in Settings → General.
+
+### Settings
+- **Owner & staff:** a new staff list alongside the owner.
+- **One server timezone** for the maintenance window, activity predictions and times the AI quotes. It replaces the maintenance window's own timezone field.
+- **AI Chat:** toggles for joining in and learning, the quiet-server message, the notes manager and the activity panel.
+
+### Fixes
+- **A welcomed player can ask a question straight away.** Greetings used to put them on the AI cooldown, so "type @Helper anytime" was followed by 15 seconds of silence.
+- **`cooldownSeconds: 0` now means no cooldown** (it silently became 15).
+- **Real answers are no longer dropped after a busy moment.** The send rate limit is now 5 per 30 seconds; at 3, a two-line welcome plus one greeting used it up.
+- **The "wb → ty" watcher runs once per message** for bridge chat, not once per connected session.
+
+### Development
+- `npm test` now runs unit tests (activity prediction, reply gating, notes) and AI behaviour tests. The behaviour tests run against a fake Anthropic API and a scripted fake server, covering empty-server welcomes, banter, open questions, silence, learning, follow-ups and AFK modes.
+- `ANTHROPIC_BASE_URL` lets the app talk to an API gateway, and the tests to their fake API.
+
+## v2.3.0
+
+Full code, security and UX audit, plus Minecraft 26.3.
+
+### Compatibility
+- **Minecraft 26.3 (protocol 777) via ViaBackwards.**
+  - No PrismarineJS package supports 26.3 yet; only unmerged community forks do, and their packet data disagrees with the protocol spec in places.
+  - Servers running ViaVersion + ViaBackwards 5.12+ accept the bot as a 26.2 client. Version detection already handles this, and now labels it correctly even when the server's version is newer than anything minecraft-data knows.
+- **`tick_end` is sent at the end of every client tick.**
+  - Vanilla clients have done this since 1.21.2, and 26.3 servers kick clients that don't (`invalid_player_movement`), including 26.2 clients passing through ViaBackwards.
+  - Backported from mineflayer PR #4137 by the postinstall script.
+- **The vendored 26.2 data was an outdated draft; it's replaced with the data PrismarineJS actually merged (`68ea7b5`).**
+  - The old copy reused 26.1's block, item and entity registries. 26.2 added 28 blocks, so every block state from calcite upward (deepslate, tuff, copper…) decoded as the wrong block, and physics misread the ground.
+  - Its `teams` packet layout was also wrong, so scoreboard, nametag and TAB-plugin team updates turned into protocol errors.
+- **The postinstall patcher (`scripts/patch-dependencies.js`, formerly `patch-26.2-support.js`) is content-hashed.**
+  - A corrected data set now replaces a stale one on the next install; previously the patcher stopped as soon as 26.2 resolved at all.
+  - It works for any vendored version and was verified against a pristine `npm ci`.
+- **Resource packs are accepted in play state too.** Before, only packs pushed during configuration were accepted, so servers that require a pack later kicked the bot.
+
+### Security
+- **Optional dashboard password (`DASHBOARD_PASSWORD`).**
+  - Signed HttpOnly SameSite=Strict cookie.
+  - Login attempts are rate-limited.
+  - Required for the page, the REST API and the socket.io handshake.
+- **Cross-site requests can no longer drive the bots.**
+  - socket.io accepted WebSocket connections from any origin, so any website open in the operator's browser could chat and run commands as their accounts.
+  - The handshake and every state-changing request are now origin-checked; `ALLOWED_ORIGINS` covers reverse proxies.
+- **Secrets never leave the server.**
+  - The Anthropic key, bridge secret and Discord webhook were sent to every browser that opened the dashboard, and returned by `/api/status`.
+  - The UI now shows "saved (…abcd)" and treats secrets as write-only.
+- **The support bot can't leak plugin secrets.**
+  - Any player could ask it to read a plugin config containing a database password or a Discord bot token.
+  - Tool results are now scrubbed of secret-shaped keys and values.
+  - `config_path` is encoded per segment with `..` refused, so prompt injection can't walk out of the plugin's config endpoint.
+- **`lookup_player` no longer returns other players' coordinates** or IP addresses.
+- **CobbleBridge events require a real secret.**
+  - The secret is compared in constant time.
+  - An empty secret refuses events.
+  - The default `changeme` triggers warnings in the log and in Settings, with a one-click generator.
+- **Hardening:**
+  - Strict Content-Security-Policy, which meant removing every inline event handler from the dashboard.
+  - `X-Frame-Options`, `nosniff`, `no-referrer`.
+  - JSON body and socket.io payload limits.
+  - The server favicon is validated before it's rendered.
+  - Session IDs are always generated server-side.
+  - Every socket event's input is validated and clamped.
+- **Dependency advisories fixed:** `ws`, `engine.io`, `socket.io-parser`, `body-parser` and `qs` (Express 4.22.3). `package-lock.json` is now committed so builds are reproducible.
+- **Discord webhook posts can't ping `@everyone` or roles.**
+- **`.env` is git-ignored**, and `.dockerignore` keeps `data/` and auth tokens out of the build context.
+
+### Fixes
+- **Disconnecting during the version check no longer leaves a stray bot logged in.** The connect continued after its awaits regardless; attempts are now cancellable. Removing a session mid-connect is covered too.
+- **A stale connection's `end` event no longer nulls out the new connection** and wedges the session.
+- **Scheduled sessions now connect when their window opens even if auto-reconnect is off.** Before, they never connected or disconnected at all. Auto-reconnect now only governs recovery from drops.
+- **"Yield to my real client" works.** The scheduler cleared the yield within 30 seconds and the bot kicked you off. It now waits until another session sees you leave, or 15 minutes.
+- **"Invalid session" (an expired Microsoft token) is no longer mistaken for a duplicate login**, which parked the session forever.
+- **Disconnect actually holds Always-online sessions offline** until you click Connect. For scheduled sessions it holds until the window closes.
+- **Running out of fast retries no longer strands always-on sessions.** They keep retrying every 10 minutes.
+- **Bridge sessions:**
+  - Scheduled and permanent bridge sessions no longer try to log in through mineflayer.
+  - A bridge session now notices when the plugin goes away.
+- **Connect watchdog.** Failures that emit nothing — a hung TCP connect, or an unsupported version thrown inside mineflayer — used to hang on "connecting…" forever. Microsoft device-code sign-in gets the code's full 15 minutes.
+- **An unreachable server fails fast** and backs off, instead of handing mineflayer a connect that can't succeed.
+- **Kick reasons are readable text** instead of raw JSON/NBT.
+- **Protocol errors are no longer shown twice** in the log.
+- **"New Session" twice now creates two sessions.** The second used to silently select the first.
+- **Breaks:**
+  - The forced-break timer measures time since this connection instead of since a break that could be days old.
+  - A break now returns in manual mode too.
+  - Break times in chat no longer show in the server's timezone.
+- **The maintenance window has a timezone.** It was evaluated on the server clock, usually UTC in Docker.
+- **Settings:**
+  - Settings merge per section, so new defaults aren't lost.
+  - `bots.json` and `settings.json` are written atomically; a crash mid-write used to wipe every session.
+  - A corrupt file is backed up instead of overwritten.
+- **Prompts:**
+  - Prompts identical to the built-in defaults are migrated back to "use default". The old editor saved frozen copies of the defaults, so they never picked up improvements.
+  - Unchanged prompts now save as default.
+- **AI:**
+  - Parallel tool calls are answered, instead of failing the request with a 400.
+  - Tools stay declared on the final round, which the API requires.
+  - Multi-block web-search answers are no longer truncated to the first citation.
+  - A paused server-tool turn is resumed.
+  - Requests time out after 30 s.
+  - Each message is sent to the model once, not twice.
+- **Greetings:** with several sessions, a first-time player got "welcome" from one bot and "wb" from the next.
+- **Graceful shutdown on SIGTERM.** `docker stop` used to wait 10 s and then kill the process mid-session.
+- **Anti-AFK nudges run on a randomised per-session cadence** instead of every bot on the same 45 s beat.
+
+### UI
+- **Microsoft sign-in code in Controls**, with a link and a Copy button. Before, it only appeared in the chat log.
+- **Status banners** for held offline, yielded to your game client (with Resume now), on break, last kick reason, and a missing account.
+- **Every state has a connection button:** Connect, Cancel while connecting or retrying, Disconnect. A stuck connect used to have no way out.
+- **Session details work on tablets and small laptops.** Between 861 and 1200 px the panel was hidden and its button did nothing.
+- **Setup changes:**
+  - Sign-in is a Microsoft/Offline picker, and the username field adapts to it.
+  - Version is a picker of supported versions.
+  - The dead per-session Host/Port fields are gone; every session uses the server address in Settings.
+- **Typed messages are no longer labelled "Assistant"** in AI-mode sessions; only automated messages are.
+- **Settings:**
+  - Password inputs for secrets, with show and remove buttons.
+  - Reset to default for each prompt.
+  - Model suggestions.
+  - Warnings for no dashboard password and the default bridge secret.
+  - "Settings saved" only appears in the tab that saved.
+- **The selected session is per browser.** Clicking a session used to switch every other open dashboard too.
+- **Uptime ticks smoothly**, measured from the server's connect time.
+- **Accessibility:**
+  - Keyboard-operable toggles (`role="switch"`) and session list.
+  - Visible focus rings.
+  - Labelled icon buttons.
+  - Escape closes dialogs.
+  - Reduced-motion support.
+  - Tertiary text contrast raised to WCAG AA.
+- **An offline banner appears** when the dashboard loses its connection to the server. An expired login redirects to sign-in.
+
+### Development
+- `npm test` runs 17 end-to-end checks against a real dashboard process and a fake local Minecraft server, with no accounts or network needed.
+- `npm run dev` starts a UI sandbox with a fake server and throwaway data.
+
 ## v2.2.1
 
 ### Fixes

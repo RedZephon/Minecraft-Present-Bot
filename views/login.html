@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>Sign in · MC Presence</title>
+  <link rel="icon" href="/icon-192.png" />
+  <style>
+    :root {
+      --bg: #0b0d12; --card: #12151c; --border: #232836; --text: #e8eaf0;
+      --muted: #8a90a2; --accent: #22c55e; --accent-text: #052e14; --danger: #f87171;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f6f8; --card: #ffffff; --border: #dfe2e8; --text: #12151c;
+        --muted: #5b6172; --accent: #16a34a; --accent-text: #ffffff; --danger: #dc2626;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+      background: var(--bg); color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    form {
+      width: 100%; max-width: 340px; padding: 28px; border-radius: 12px;
+      background: var(--card); border: 1px solid var(--border);
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+    label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 10px 12px; border-radius: 8px; font: inherit;
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button {
+      width: 100%; margin-top: 16px; padding: 10px; border: 0; border-radius: 8px;
+      background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .error { color: var(--danger); font-size: 13px; margin-top: 12px; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <form method="post" action="/login">
+    <h1>MC Presence</h1>
+    <p>Enter the dashboard password to continue.</p>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+    <button type="submit">Sign in</button>
+    <div class="error" role="alert">__LOGIN_ERROR__</div>
+  </form>
+</body>
+</html>

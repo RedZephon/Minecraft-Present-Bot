@@ -1,6 +1,17 @@
+# Never send credentials or runtime state into the build context
+data/
+.minecraft/
+minecraft-auth/
+.env
+*.tar.gz
+[internal]
+
+# Not needed in the image
 .git
 .github
+.claude
 node_modules
-.env
+test/
 *.md
+!vendor/**/*.md
 .DS_Store

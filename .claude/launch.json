@@ -2,9 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "mc-presence-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "test/dev.js"
+      ],
+      "port": 3111
+    },
+    {
       "name": "mc-presence",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["server.js"],
+      "runtimeArgs": [
+        "server.js"
+      ],
       "port": 3100
     }
   ]

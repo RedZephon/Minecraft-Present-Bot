@@ -5,7 +5,6 @@ minecraft-auth/
 
 # Dependencies
 node_modules/
-package-lock.json
 
 # OS
 .DS_Store
@@ -17,3 +16,6 @@ mc-presence-bot.tar.gz
 # Misc
 [internal]
 *.log
+
+# Secrets
+.env
