@@ -1321,6 +1321,7 @@ setInterval(() => {
   evictOlder(greetingCooldowns, 30 * 60 * 1000);    // 5m rejoin cooldown
   evictOlder(quietNoticeAt, DAY);
   evictOlder(lastAmbientReplyAt, DAY);
+  evictOlder(aiErrorShownAt, DAY);
   evictOlder(botSilenceUntil, DAY);                  // silence already expires; drop old keys
   evictOlder(lastAfkIssuedAt, DAY);
   // botDailyStats: key includes date string — drop anything not today's key
@@ -1807,12 +1808,16 @@ const AI_MAX_ROUNDS = 4;
 const ANTHROPIC_URL = (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "") + "/v1/messages";
 
 // One model call, including the client-side tool loop for the support bot.
-// Returns the reply text, or null on any failure.
-async function runModel({ label, system, user, useTools = false, maxTokens = 400 }) {
-  if (!settings.ai.apiKey) {
-    console.log(`[MC-Presence] [${label}] AI: no API key configured`);
+// Returns the reply text, or null on any failure. Failures are reported to
+// `onError` with a plain-English reason; they used to only reach the server
+// console, so a bot that couldn't reply just looked like it was ignoring you.
+async function runModel({ label, system, user, useTools = false, maxTokens = 400, onError }) {
+  const fail = (reason) => {
+    console.error(`[MC-Presence] [${label}] AI reply failed: ${reason}`);
+    if (onError) onError(reason);
     return null;
-  }
+  };
+  if (!settings.ai.apiKey) return fail("no Anthropic API key is set (Settings → AI Chat)");
   const messages = [{ role: "user", content: user }];
   try {
     for (let round = 0; round < AI_MAX_ROUNDS; round++) {
@@ -1842,9 +1847,15 @@ async function runModel({ label, system, user, useTools = false, maxTokens = 400
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        console.error(`[MC-Presence] [${label}] AI API error ${res.status}:`, err.slice(0, 500));
-        return null;
+        const raw = await res.text();
+        let detail = raw.slice(0, 300);
+        try { detail = JSON.parse(raw).error?.message || detail; } catch (_) {}
+        const hint = res.status === 401 ? " (the API key is invalid or revoked)"
+          : res.status === 404 ? ` (check the model name "${settings.ai.model}")`
+          : res.status === 429 ? " (rate limited)"
+          : res.status === 529 ? " (Anthropic is overloaded; it'll work again shortly)"
+          : "";
+        return fail(`Anthropic API error ${res.status}: ${detail}${hint}`);
       }
 
       const data = await res.json();
@@ -1883,11 +1894,23 @@ async function runModel({ label, system, user, useTools = false, maxTokens = 400
       const text = content.filter(c => c.type === "text").map(c => c.text).join("").trim();
       return text || null;
     }
-    return null; // ran out of rounds
+    return fail("the model kept calling tools without answering");
   } catch (err) {
-    console.error(`[MC-Presence] [${label}] AI call failed:`, err.name === "TimeoutError" ? "timed out" : err.message);
-    return null;
+    return fail(err.name === "TimeoutError" ? `no response from Anthropic within ${AI_REQUEST_TIMEOUT_MS / 1000}s` : `couldn't reach Anthropic (${err.message})`);
   }
+}
+
+// Tell the operator, in the dashboard, when a bot couldn't reply: a red line
+// in that session's log plus a toast. Repeats of the same reason are
+// throttled so an outage doesn't flood the log.
+const aiErrorShownAt = new Map(); // "botId|reason" -> timestamp
+function reportAIError(entry, reason) {
+  const key = `${entry.id}|${reason}`;
+  const now = Date.now();
+  if (now - (aiErrorShownAt.get(key) || 0) < 5 * 60 * 1000) return;
+  aiErrorShownAt.set(key, now);
+  pushChat(entry, { sender: "System", message: `Couldn't reply: ${reason}`, type: "error" });
+  io.emit("toast", { message: `${entry.label} couldn't reply: ${reason}`, level: "error" });
 }
 
 const TRIGGER_TEXT = {
@@ -1908,7 +1931,7 @@ async function callAI(entry, mode, { playerName, message, isWhisper, reason }) {
     ? transcript.format(recent, { tz: settings.timezone || undefined, selfName: botName })
     : "(no recent chat)";
   const user = `Recent public chat (oldest first):\n${chat}\n\n${TRIGGER_TEXT[reason](playerName, message)}`;
-  return runModel({ label: entry.label, system, user, useTools: mode === "support" });
+  return runModel({ label: entry.label, system, user, useTools: mode === "support", onError: (reason) => reportAIError(entry, reason) });
 }
 
 // ---------------------------------------------------------------------------
@@ -2119,7 +2142,12 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
   if (!bots.has(entry.id) || entry.state !== "connected") return;
 
   if (isSilentReply(response)) {
-    if (response) console.log(`[MC-Presence] [${entry.label}] AI chose silence (${candidate.reason}): ${response.slice(0, 80)}`);
+    if (response) {
+      console.log(`[MC-Presence] [${entry.label}] AI chose silence (${candidate.reason}): ${response.slice(0, 80)}`);
+      // Visible when someone spoke to the bot directly, so "no reply" is
+      // never a mystery. Open questions it passes on stay out of the log.
+      if (candidate.direct) pushChat(entry, { sender: "System", message: `Chose not to reply to ${playerName}.`, type: "system" });
+    }
     return;
   }
 
@@ -2219,7 +2247,7 @@ async function quietServerWelcome(entry, playerName, firstTime) {
         `tell them when people are usually on. ${when} Mention they can ask you (@${botName}) anything.`
       : `${playerName}, a returning player, just joined and nobody else is online.\n` +
         `Write ONE short, friendly chat line: a quick hello and when people are usually on. ${when}`;
-    reply = await runModel({ label: entry.label, system, user, maxTokens: 300 });
+    reply = await runModel({ label: entry.label, system, user, maxTokens: 300, onError: (reason) => reportAIError(entry, reason) });
     if (isSilentReply(reply)) reply = null;
   }
 

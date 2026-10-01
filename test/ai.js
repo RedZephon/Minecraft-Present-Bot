@@ -319,7 +319,7 @@ async function main() {
   const failed = results.filter(r => !r).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   if (failed) {
-    console.log("\n--- dashboard output ---\n" + output.split("\n").filter(l => /AI|Greeting|Rate|RedZephon|silence/.test(l)).slice(-40).join("\n"));
+    console.log("\n--- dashboard output ---\n" + output.split("\n").slice(-60).join("\n"));
     process.exit(1);
   }
   process.exit(0);

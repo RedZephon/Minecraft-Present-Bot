@@ -81,9 +81,10 @@ async function main() {
   });
 
   // Fake Anthropic API.
-  const api = { requests: [], respond: () => "[silent]" };
+  const api = { requests: [], respond: () => "[silent]", failNext: null };
   const apiServer = jsonServer(apiPort, (req, body) => {
     api.requests.push(body);
+    if (api.failNext) { const f = api.failNext; api.failNext = null; return f; }
     return [200, { content: [{ type: "text", text: api.respond(body) }], stop_reason: "end_turn" }];
   });
   const userText = (r) => r.messages.map(m => (typeof m.content === "string" ? m.content : "")).join("\n");
@@ -97,6 +98,8 @@ async function main() {
   fs.writeFileSync(path.join(dataDir, "bots.json"), JSON.stringify([
     { id: "cobblebot", label: "CobbleBot", botType: "bridge", mode: "manual", aiMode: "support" },
     { id: "watcher", label: "Watcher", username: "Watcher", auth: "offline", mode: "manual", antiAfk: false },
+    // Like the operator's own account: opted in to support-bot replies.
+    { id: "owner", label: "Owner", username: "Owner", auth: "offline", mode: "manual", antiAfk: false, aiReplies: true },
   ]));
 
   const dash = spawn(process.execPath, [path.join(ROOT, "server.js")], {
@@ -206,6 +209,38 @@ async function main() {
       fake.system("CobbleBot » Hey Steve, I hear you!");
       await sleep(1000);
       assert.strictEqual(api.requests.length, requests);
+    });
+
+    await test("a message typed in the dashboard as an opted-in account gets a reply from the virtual bot", async () => {
+      await fetch(`${base}/api/connect/owner`, { method: "POST" });
+      await waitFor(async () => (await (await fetch(`${base}/api/status`)).json()).bots.find(b => b.id === "owner").state === "connected", { what: "owner connected" });
+      const io = require("../node_modules/socket.io/client-dist/socket.io.js");
+      const socket = io(base, { transports: ["websocket"] });
+      await new Promise((resolve, reject) => { socket.once("init", resolve); socket.once("connect_error", reject); });
+      api.respond = (r) => (trigger(r).includes("hey @cobblebot") ? "Hey Owner!" : "[silent]");
+      socket.emit("send_chat", { botId: "owner", message: "hey @cobblebot" });
+      try {
+        await waitFor(() => plugin.chats.includes("Hey Owner!"), { what: "reply to dashboard message" });
+      } finally {
+        socket.close();
+      }
+    });
+
+    await test("when the AI can't reply, the dashboard says why", async () => {
+      api.failNext = [401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }];
+      await event({ type: "player_chat", player: "Steve", message: "@CobbleBot are you broken?" });
+      const log = await waitFor(async () => {
+        const l = (await (await fetch(`${base}/api/sessions/cobblebot/log`)).json()).chatLog;
+        return l.find(m => m.type === "error" && m.message.startsWith("Couldn't reply"));
+      }, { what: "error line" });
+      assert.strictEqual(log.message, "Couldn't reply: Anthropic API error 401: invalid x-api-key (the API key is invalid or revoked)");
+    });
+
+    await test("a mention it decides not to answer leaves a note", async () => {
+      api.respond = () => "[silent]";
+      await event({ type: "player_chat", player: "Steve", message: "@CobbleBot lol nvm" });
+      await waitFor(async () => (await (await fetch(`${base}/api/sessions/cobblebot/log`)).json()).chatLog
+        .some(m => m.message === "Chose not to reply to Steve."), { what: "silence note" });
     });
 
     await test("the bridge session reports when the plugin last reached the app", async () => {

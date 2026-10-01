@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.5.2
+
+### Fixes
+- **A bot that couldn't reply now says why, in the dashboard.**
+  - Before, a missing or invalid API key, an unknown model name, no API credit, rate limits, timeouts and network errors only reached the server console. The bot just looked like it was ignoring people.
+  - Now each failure adds a red "Couldn't reply: …" line to that session's log, with Anthropic's own error message and a hint (e.g. "the API key is invalid or revoked"), plus a toast.
+  - The same reason is shown at most every 5 minutes per session.
+- **A direct mention the model decides not to answer leaves a quiet "Chose not to reply to X." note** in the bot's log, so silence is never a mystery.
+
+### Tests
+- An end-to-end check that a message typed in the dashboard as an opted-in account reaches a virtual bot and gets a reply in game.
+- A check that API failures and silent decisions appear in the bot's log.
+
 ## v2.5.1
 
 ### Fixes
