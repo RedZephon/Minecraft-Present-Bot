@@ -530,8 +530,10 @@ function renderChatLog() {
 function renderEntry(msg, bot, prev) {
   const type = msg.type || 'chat';
   if (SYSTEM_TYPES.includes(type)) return renderSystemLine(msg, type);
+  // Whispers never group with public chat, so the "whisper" label stays visible.
   const grouped = prev && !SYSTEM_TYPES.includes(prev.type || 'chat') &&
-    prev.sender === msg.sender && (msg.ts - (prev.ts || 0)) < 300000;
+    prev.sender === msg.sender && (prev.type === 'whisper') === (msg.type === 'whisper') &&
+    (msg.ts - (prev.ts || 0)) < 300000;
   return renderChatMessage(msg, bot, grouped);
 }
 
@@ -558,12 +560,14 @@ function renderChatMessage(msg, bot, grouped) {
   const isSelf = msg.type === 'self' || msg.type === 'command' || sender === mcName;
 
   let msgClass = 'player';
-  let avatarHtml = `<img class="message-avatar" src="${esc(avatarUrl(sender, 36))}" alt="" />`;
-  let authorExtra = '';
+  // Nicknames have no skin of their own; use the real account's.
+  let avatarHtml = `<img class="message-avatar" src="${esc(avatarUrl(msg.realName || sender, 36))}" alt="" />`;
+  let authorExtra = msg.realName ? `<span class="real-name" title="Minecraft username">${esc(msg.realName)}</span>` : '';
 
   if (isAi) {
     msgClass = 'ai';
     avatarHtml = '<div class="message-avatar"><i class="fa-solid fa-wand-magic-sparkles"></i></div>';
+    avatarHtml = msg.realName ? `<img class="message-avatar" src="${esc(avatarUrl(msg.realName, 36))}" alt="" />` : avatarHtml;
     authorExtra = `<span class="ai-pill">${esc(bot.aiMode === 'support' ? (bot.assistantName || 'Assistant') : 'Auto')}</span>`;
   } else if (isSelf) {
     msgClass = 'me';
@@ -783,6 +787,13 @@ function renderControlsTab(bot) {
           <div class="toggle-desc">Small random movements to prevent idle kicks.${isAfkMode(eff) ? ' Paused while an AFK mode is on.' : ''}</div>
         </div>
         ${toggleHtml('antiAfk', bot.antiAfk, 'Anti-AFK')}
+      </div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="toggle-title">Support bot replies to this account</div>
+          <div class="toggle-desc">AI bots normally ignore accounts this app is playing, so bots never talk to each other. Turn on to test the support bot by chatting as this account from here. Its automatic messages are still ignored.</div>
+        </div>
+        ${toggleHtml('aiReplies', bot.aiReplies, 'Support bot replies to this account')}
       </div>` : ''}
       ${isMineflayer || aiEnabled ? `
       <div class="ai-mode-block">
@@ -996,7 +1007,7 @@ function onToggle(el) {
     bot.breaks = breaks;
     emitUpdate(bot.id, { breaks });
     renderDetails();
-  } else if (field === 'autoReconnect' || field === 'antiAfk') {
+  } else if (field === 'autoReconnect' || field === 'antiAfk' || field === 'aiReplies') {
     bot[field] = next;
     socket.emit('session:behavior:update', { id: bot.id, field, value: next });
   }

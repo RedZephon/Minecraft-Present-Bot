@@ -11,6 +11,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { ActivityTracker, describePrediction } = require("./lib/activity");
+const { parseChatLine, leadingSpeaker, cleanName, AliasBook, sameMessage } = require("./lib/chat-parse");
 const { Transcript, NotesStore, parseJsonObject, replyCandidate, mentions, isSilentReply, SILENT_TOKEN } = require("./lib/chat-context");
 
 const APP_VERSION = require("./package.json").version;
@@ -474,6 +475,7 @@ function saveBotConfigs() {
       autoReconnect: b.autoReconnect,
       antiAfk: b.antiAfk,
       assistantName: b.assistantName,
+      aiReplies: b.aiReplies,
       breaks: b.breaks,
       lastBreakAt: b.lastBreakAt,
     });
@@ -685,25 +687,79 @@ function stripChatCodes(s) {
   return String(s || "").replace(/§[0-9a-fk-or]/gi, "").trim();
 }
 
-// Resolve a chat sender to a real MC username. Direct match via the tab list
-// wins; otherwise reverse-lookup by display name (handles CMI / Essentials
-// nicknames where the server rewrites chat to show the nickname but the tab
-// list still keys players by their real Minecraft username). Returns null if
-// no match — that's our signal that the chat is a plugin broadcast and should
-// be classified as a system message.
-function resolveChatSender(bot, name) {
-  if (!bot || !bot.players || !name) return null;
-  if (bot.players[name]) return name;
-  const target = name.toLowerCase();
-  for (const realName in bot.players) {
-    const p = bot.players[realName];
-    if (!p || !p.displayName) continue;
+// Nicknames learned from CobbleBridge chat events (see pairWithBridgeChat).
+// Lazily created: DATA_DIR helpers are defined above, the book loads once.
+let aliasBook = null;
+function aliases() {
+  if (!aliasBook) {
+    aliasBook = new AliasBook({
+      load: () => readJsonSafe(ALIASES_PATH),
+      save: (data) => { try { writeJsonAtomic(ALIASES_PATH, data); } catch (err) { console.error("[MC-Presence] Failed to save aliases:", err.message); } },
+    });
+  }
+  return aliasBook;
+}
+
+// Tab-list players with their display names as plain text, plus learned
+// nicknames, for matching nicknamed / prefixed chat lines.
+function tabListPlayers(bot) {
+  if (!bot || !bot.players) return [];
+  const list = Object.values(bot.players).filter(p => p && p.username).map(p => {
     let display = "";
-    try { display = p.displayName.toString(); } catch (_) {}
-    const clean = stripChatCodes(display).toLowerCase();
-    if (clean && clean === target) return realName;
+    try { display = p.displayName ? p.displayName.toString() : ""; } catch (_) {}
+    return { username: p.username, display, uuid: p.uuid };
+  });
+  return list.concat(aliases().entriesFor(list.map(p => p.username)));
+}
+
+// Recent chat as reported by CobbleBridge (real name + message). An in-game
+// line that couldn't be tied to a player is matched against these.
+const recentBridgeChats = []; // { player, message, ts }
+const BRIDGE_PAIR_WAIT_MS = 1500;
+
+function noteBridgeChat(player, message) {
+  const now = Date.now();
+  recentBridgeChats.push({ player, message, ts: now });
+  while (recentBridgeChats.length && now - recentBridgeChats[0].ts > 15_000) recentBridgeChats.shift();
+}
+
+// Which real player sent this message, per CobbleBridge? Learns the alias.
+function pairWithBridgeChat(alias, message) {
+  const now = Date.now();
+  const hit = [...recentBridgeChats].reverse().find(c => now - c.ts <= 10_000 && sameMessage(c.message, message));
+  if (!hit) return null;
+  if (aliases().learn(alias, hit.player)) console.log(`[MC-Presence] Learned nickname: ${alias} is ${hit.player}`);
+  return hit.player;
+}
+
+function findPlayerByUuid(bot, uuid) {
+  if (!uuid || !bot || !bot.players) return null;
+  const want = String(uuid).replace(/-/g, "").toLowerCase();
+  for (const p of Object.values(bot.players)) {
+    if (p && p.uuid && String(p.uuid).replace(/-/g, "").toLowerCase() === want) return p;
   }
   return null;
+}
+
+// Plain text of a chat component that may arrive as JSON text, an object,
+// or an NBT compound.
+function componentText(bot, value) {
+  if (value == null || value === "") return "";
+  let v = value;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (!(t.startsWith("{") || t.startsWith("[") || t.startsWith('"'))) return stripChatCodes(t);
+    try { v = JSON.parse(t); } catch (_) { return stripChatCodes(t); }
+  }
+  if (v && typeof v === "object" && typeof v.type === "string" && "value" in v) {
+    try { v = require("prismarine-nbt").simplify(v); } catch (_) {}
+  }
+  try {
+    const ChatMessage = require("prismarine-chat")(bot.registry);
+    return stripChatCodes(new ChatMessage(v).toString());
+  } catch (_) {
+    return typeof v === "string" ? stripChatCodes(v) : "";
+  }
 }
 
 function sanitizeMcChat(text) {
@@ -751,16 +807,48 @@ function splitMcChat(text) {
 // Confirmed bot MC usernames — populated on spawn, persists in memory
 const botMcUsernames = new Map(); // lowercase mc username -> botId
 
+// Is this name one of our bots *right now*? Used to stop bots answering or
+// greeting each other. A real account only counts while a session is actually
+// playing on it: when that session is offline, the same name chatting is the
+// human owner of the account. (Matching labels and last-known usernames of
+// offline sessions made the support bot ignore its own operator.)
 function isAnyBotAccount(username) {
-  // Returns true if this username belongs to ANY bot, regardless of AI mode
+  if (!username) return false;
   const lower = username.toLowerCase();
-  if (botMcUsernames.has(lower)) return true;
+  if (botMcUsernames.has(lower)) return true; // only populated while connected
   for (const [, entry] of bots) {
-    if (entry.bot && entry.bot.username && entry.bot.username.toLowerCase() === lower) return true;
-    if (entry.label && entry.label.toLowerCase() === lower) return true;
-    if (entry.connectedUsername && entry.connectedUsername.toLowerCase() === lower) return true;
+    if (entry.botType === "bridge") {
+      if (entry.label && entry.label.toLowerCase() === lower) return true;
+      continue;
+    }
+    if (entry.state === "disconnected") continue;
+    const names = [entry.bot?.username, entry.connectedUsername, entry.auth === "offline" ? entry.username : null];
+    if (names.some(n => n && n.toLowerCase() === lower)) return true;
   }
   return false;
+}
+
+// The mineflayer session currently playing on this account, if any.
+function liveSessionFor(username) {
+  const lower = String(username || "").toLowerCase();
+  for (const [, entry] of bots) {
+    if (entry.botType !== "mineflayer" || entry.state === "disconnected") continue;
+    const names = [entry.bot?.username, entry.connectedUsername, entry.auth === "offline" ? entry.username : null];
+    if (names.some(n => n && n.toLowerCase() === lower)) return entry;
+  }
+  return null;
+}
+
+// Should the AI treat this chat line as coming from a bot (and ignore it)?
+// Yes for our bots — unless the session has "Support bot replies to this
+// account" on and the line was typed from the dashboard rather than sent
+// automatically (greetings, AFK replies), which keeps bots from looping.
+function isBotSpeaker(username, message) {
+  if (!isAnyBotAccount(username)) return false;
+  const session = liveSessionFor(username);
+  if (!session || !session.aiReplies) return true;
+  const text = sanitizeMcChat(message);
+  return (botSentMessages.get(session.id) || []).some(m => m.content === text);
 }
 
 // True if the given username matches a *bridge* bot's label. Used to suppress
@@ -833,6 +921,7 @@ function serializeBot(entry, opts = {}) {
     autoReconnect: entry.autoReconnect,
     antiAfk: entry.antiAfk,
     assistantName: entry.assistantName,
+    aiReplies: !!entry.aiReplies,
     breaks: entry.breaks,
     onBreak: !!entry.onBreak,
     breakUntil: entry.breakUntil || null,
@@ -1169,6 +1258,7 @@ function applyAfkModeTransition(entry, prevMode, nextMode) {
 const knownPlayers = new Set();
 const KNOWN_PLAYERS_PATH = path.join(DATA_DIR, "known-players.json");
 const NOTES_PATH = path.join(DATA_DIR, "notes.json");
+const ALIASES_PATH = path.join(DATA_DIR, "aliases.json");
 const ACTIVITY_PATH = path.join(DATA_DIR, "activity.json");
 
 function loadKnownPlayers() {
@@ -1260,6 +1350,16 @@ function markPlayerGreeted(playerName) {
   greetingCooldowns.set(playerName, Date.now());
 }
 
+// Virtual (CobbleBridge) bots are shown as "[Bot] Name" in Discord and the
+// dashboard, so nobody mistakes them for a person. Mentions still match the
+// bare name. In-game, the name comes from CobbleBridge's own chat-format.
+const BOT_TAG = "[Bot]";
+function botDisplayName(entry) {
+  const name = entry.bot?.username || entry.label || "MC Bot";
+  if (entry.botType !== "bridge" || name.toLowerCase().startsWith(BOT_TAG.toLowerCase())) return name;
+  return `${BOT_TAG} ${name}`;
+}
+
 // Unified bot message sender with dedup + rate limiting
 function sendBotMessage(entry, message, opts = {}) {
   const clean = sanitizeMcChat(message);
@@ -1295,12 +1395,11 @@ function sendBotMessage(entry, message, opts = {}) {
   // session label). Only used for bridge (virtual) bots — real mineflayer
   // accounts produce real in-game chat that the server-side Discord<->MC
   // bridge already mirrors, so posting a webhook for those would double-post.
-  const webhookName = entry.bot?.username || entry.label || "MC Bot";
 
   try {
     if (entry.botType === "bridge") {
       if (opts.whisperTo) bridgeSendWhisper(opts.whisperTo, clean);
-      else bridgeSendChat(clean, webhookName);
+      else bridgeSendChat(clean, botDisplayName(entry), entry.label);
     } else if (entry.bot) {
       if (opts.whisperTo) entry.bot.chat(`/msg ${opts.whisperTo} ${clean}`);
       else entry.bot.chat(clean);
@@ -1324,7 +1423,7 @@ function sendBotMessage(entry, message, opts = {}) {
 
   // "auto" marks greetings and AI replies, so the dashboard can tell them
   // apart from messages the operator typed (which are "self").
-  pushChat(entry, { sender: botName, message: clean, type: "auto" });
+  pushChat(entry, { sender: botDisplayName(entry), realName: entry.botType === "bridge" ? botName : undefined, message: clean, type: "auto" });
   if (!opts.whisperTo) recordChatLine(botName, clean, { bot: true });
 
   // Bridge-bot chat doesn't reliably propagate to other mineflayer sessions —
@@ -1333,7 +1432,7 @@ function sendBotMessage(entry, message, opts = {}) {
   // public messages (not whispers) directly into every other connected
   // session's log so they show consistently.
   if (entry.botType === "bridge" && !opts.whisperTo) {
-    mirrorBridgeChatToOtherSessions(entry.id, botName, clean);
+    mirrorBridgeChatToOtherSessions(entry.id, botDisplayName(entry), clean);
   }
 
   return true;
@@ -1917,7 +2016,7 @@ async function handleAIChat(entry, playerName, message, isWhisper) {
   const botName = entry.bot?.username || entry.label;
 
   // Never answer ourselves or another bot — that's how reply loops start.
-  if (isThisBot(entry, playerName) || isAnyBotAccount(playerName)) return;
+  if (isThisBot(entry, playerName) || isBotSpeaker(playerName, message)) return;
 
   // Owner commands for the support bot: silence / resume / status.
   if (mode === "support") {
@@ -2183,6 +2282,8 @@ function registerBot(cfg) {
     autoReconnect: cfg.autoReconnect !== false,
     antiAfk: cfg.antiAfk !== false,
     assistantName: str(cfg.assistantName, 32) || "Assistant",
+    // Let AI sessions answer what the operator types as this account.
+    aiReplies: cfg.aiReplies === true,
     schedule: normalizeSchedule(cfg.schedule),
     // Random "breaks from playing" — periodically rolls a chance to disconnect
     // for a random duration (simulates a human stepping away).
@@ -2559,66 +2660,114 @@ async function connectBot(entry) {
     startBreakCheck(entry);
   });
 
-  bot.on("chat", (username, message) => {
-    if (entry.bot !== bot || username === bot.username) return;
+  // --- Chat ---
+  // One path for every chat line, whichever way it arrived.
+  const handleIncomingChat = ({ realName, shown, message, whisper }) => {
+    if (!message) return;
+    if (realName && isThisBot(entry, realName)) return; // our own line echoed back
+    // Our bridge bots' lines were already mirrored into every session.
+    if (isBridgeBotLabel(shown) || isBridgeBotLabel(realName)) return;
+    pushChat(entry, {
+      sender: shown || realName,
+      realName: realName && shown && realName.toLowerCase() !== shown.toLowerCase() ? realName : undefined,
+      message,
+      type: whisper ? "whisper" : "chat",
+    });
+    if (!realName || !isRealPlayer(realName)) return;
+    const fromBot = isBotSpeaker(realName, message);
+    // Several sessions see the same public line; only the first records it.
+    const fresh = !whisper && !fromBot ? recordChatLine(realName, message) : null;
+    if (fromBot) return;
+    if (fresh && /^\s*wb\s*[!.]?\s*$/i.test(message)) checkWbWatchers(realName);
+    if (!whisper && /has made the advancement|has completed the challenge|has reached the goal/i.test(message)) return;
+    handleAIChat(entry, realName, message, whisper);
+  };
 
-    // Chat from our own bridge bots was already mirrored directly into this
-    // session's log by mirrorBridgeChatToOtherSessions.
-    if (isBridgeBotLabel(username)) return;
-
-    // The tab list is the source of truth for real players. The display-name
-    // fallback inside resolveChatSender catches CMI/Essentials nicknames.
-    // Plugin broadcasts match neither and fall through to a system line.
-    const realUsername = resolveChatSender(bot, username);
-    if (!realUsername) {
-      pushChat(entry, { sender: "Server", message: `${username}: ${message}`, type: "system" });
+  // Signed player chat: the packet carries the sender's UUID and chat type,
+  // so nicknames and rank prefixes can't confuse who spoke, and whispers are
+  // known to be whispers. (Mineflayer's own chat/whisper events guess both
+  // from the rendered text, which is how nicknamed players' messages ended
+  // up as "Server" lines.)
+  bot._client.on("playerChat", (data) => {
+    if (entry.bot !== bot || !data) return;
+    const typeIdx = data.type && typeof data.type === "object" ? (data.type.chatType ?? data.type.type) : data.type;
+    const typeName = String(bot.registry?.chatFormattingById?.[typeIdx]?.name || "");
+    if (/msg_command_outgoing/.test(typeName)) return; // our own /msg, already logged
+    const player = findPlayerByUuid(bot, data.sender);
+    const shown = componentText(bot, data.senderName) || player?.username || "";
+    let message = typeof data.plainMessage === "string" ? data.plainMessage.trim() : "";
+    if (!message || (!player && !shown)) {
+      // Older servers: only the rendered line is available.
+      const rendered = componentText(bot, data.formattedMessage);
+      const parsed = parseChatLine(rendered, tabListPlayers(bot));
+      if (parsed && parsed.kind !== "outgoing") {
+        handleIncomingChat({ realName: parsed.player.username, shown: parsed.shown, message: parsed.message, whisper: parsed.kind === "whisper" });
+      } else if (rendered && !parsed) {
+        pushChat(entry, { sender: "Server", message: rendered, type: "server" });
+      }
       return;
     }
-
-    // Show the visible name (nickname under CMI); use the real MC username
-    // for cooldowns, bot-account checks, and AI context.
-    pushChat(entry, { sender: username, message, type: "chat" });
-    if (!isAnyBotAccount(realUsername)) recordChatLine(realUsername, message);
-    if (!isAnyBotAccount(realUsername) && /^\s*wb\s*[!.]?\s*$/i.test(message)) {
-      checkWbWatchers(realUsername);
-    }
-    if (isRealPlayer(realUsername) && !isAnyBotAccount(realUsername)) {
-      if (/has made the advancement|has completed the challenge|has reached the goal/i.test(message)) return;
-      handleAIChat(entry, realUsername, message, false);
-    }
+    handleIncomingChat({
+      realName: player?.username || cleanName(shown),
+      shown: cleanName(shown) || player?.username,
+      message,
+      whisper: /msg_command_incoming/.test(typeName),
+    });
   });
 
-  bot.on("whisper", (username, message) => {
-    if (entry.bot !== bot) return;
-    pushChat(entry, { sender: username, message, type: "whisper" });
-    const realUsername = resolveChatSender(bot, username);
-    if (realUsername && isRealPlayer(realUsername)) {
-      handleAIChat(entry, realUsername, message, true);
-    }
-  });
-
-  bot.on("message", (jsonMsg) => {
-    if (entry.bot !== bot) return;
-    const text = jsonMsg.toString().trim();
+  // System messages: plugin-formatted chat and /msg (CMI, Essentials,
+  // CobbleBridge), joins/leaves/deaths, and every other server broadcast.
+  bot.on("message", (jsonMsg, position) => {
+    if (entry.bot !== bot || position !== "system") return; // player chat handled above; action bar ignored
+    const text = jsonMsg.toString().replace(/§[0-9a-fk-orx]/gi, "").trim();
     if (!text) return;
-    // Skip messages with formatting codes (fake plugin entries)
-    if (text.includes("§")) return;
+
+    // Our own lines echoed back (already logged when sent), and bridge bots'
+    // broadcasts (already mirrored into every session).
+    const speaker = leadingSpeaker(text);
+    if (speaker && (isBridgeBotLabel(speaker) || isThisBot(entry, speaker))) return;
+
+    const parsed = parseChatLine(text, tabListPlayers(bot));
+    if (parsed && parsed.kind === "outgoing") return; // our own /msg echo
+    if (parsed && !parsed.unresolved) {
+      handleIncomingChat({ realName: parsed.player.username, shown: parsed.shown, message: parsed.message, whisper: parsed.kind === "whisper" });
+      return;
+    }
+    if (parsed && parsed.unresolved) {
+      // Chat-shaped, but the name isn't in the tab list — typically a CMI
+      // nickname. CobbleBridge reports the real sender of every message, so
+      // pair the two (its event can land just before or after this line).
+      const deliver = (realName) => handleIncomingChat({
+        realName, shown: parsed.name, message: parsed.message, whisper: parsed.kind === "whisper",
+      });
+      const now = pairWithBridgeChat(parsed.name, parsed.message);
+      if (now) return deliver(now);
+      const settle = () => {
+        if (entry.bot !== bot) return;
+        const real = pairWithBridgeChat(parsed.name, parsed.message);
+        if (real) deliver(real);
+        // Whispers and "~Nick" lines are players even without proof.
+        else if (parsed.kind === "whisper" || parsed.nickMarked) deliver(parsed.name);
+        else pushChat(entry, { sender: "Server", message: text, type: "server" });
+      };
+      if (Date.now() - bridgeLastAt.chat < BRIDGE_ACTIVE_TTL_MS) registerBotTimeout(entry, settle, BRIDGE_PAIR_WAIT_MS);
+      else settle();
+      return;
+    }
 
     // First-time join broadcasts, e.g. "wittywolf joined for the first time"
     // or "[+] wittywolf joined the server for the first time".
     const firstTimeMatch = text.match(/(?:^\[?\+?\]?\s*)?(\w+)\s+(?:joined|has joined|logged in).*(?:for the first time|first time)/i);
-    if (firstTimeMatch) {
+    if (firstTimeMatch && isRealPlayer(firstTimeMatch[1])) {
       const name = firstTimeMatch[1];
-      if (isRealPlayer(name)) {
-        confirmedFirstTimers.add(name);
-        setTimeout(() => confirmedFirstTimers.delete(name), 30000);
-        console.log(`[MC-Presence] [${entry.label}] First-time join detected: ${name}`);
-      }
+      confirmedFirstTimers.add(name);
+      setTimeout(() => confirmedFirstTimers.delete(name), 30000);
+      console.log(`[MC-Presence] [${entry.label}] First-time join detected: ${name}`);
     }
 
     // Classify join/leave/death messages with specific types for icon rendering
-    const isJoin = /^\[\+\]|logged in via|joined.*for the first time/i.test(text);
-    const isLeave = /^\[-\]|left the server|lost connection|logged out/i.test(text);
+    const isJoin = /^\[\+\]|logged in via|joined the game|joined.*for the first time/i.test(text);
+    const isLeave = /^\[-\]|left the (server|game)|lost connection|logged out/i.test(text);
     const isDeath = /was slain|was shot|drowned|burned|fell|blew up|was killed|hit the ground|withered|was squashed/i.test(text);
 
     // Suppress only the types CobbleBridge is actively emitting; otherwise
@@ -2626,16 +2775,9 @@ async function connectBot(entry) {
     if (isJoin && isBridgeJoinActive()) return;
     if (isLeave && isBridgeQuitActive()) return;
 
-    if (isJoin) {
-      pushChat(entry, { sender: "Server", message: text, type: "join" });
-    } else if (isLeave) {
-      pushChat(entry, { sender: "Server", message: text, type: "leave" });
-    } else if (isDeath) {
-      pushChat(entry, { sender: "Server", message: text, type: "server" });
-    } else if (/joined|left|logged/i.test(text)) {
-      if (isBridgeJoinActive() && isBridgeQuitActive()) return;
-      pushChat(entry, { sender: "Server", message: text, type: "server" });
-    }
+    // Anything else is still shown: dropping unrecognised lines is how
+    // plugin-formatted chat and /msg used to vanish from the dashboard.
+    pushChat(entry, { sender: "Server", message: text, type: isJoin ? "join" : isLeave ? "leave" : "server" });
   });
 
   bot.on("playerJoined", (player) => {
@@ -2978,9 +3120,9 @@ io.on("connection", (socket) => {
         pushChat(entry, { sender: "System", message: "Commands aren't supported for bridge sessions.", type: "error" });
         return;
       }
-      bridgeSendChat(clean, entry.label || "MC Bot");
-      pushChat(entry, { sender: entry.label, message: clean, type: "self" });
-      mirrorBridgeChatToOtherSessions(entry.id, entry.label, clean);
+      bridgeSendChat(clean, botDisplayName(entry), entry.label);
+      pushChat(entry, { sender: botDisplayName(entry), realName: entry.label, message: clean, type: "self" });
+      mirrorBridgeChatToOtherSessions(entry.id, botDisplayName(entry), clean);
     } else if (entry.bot) {
       try {
         entry.bot.chat(msg);
@@ -2992,7 +3134,7 @@ io.on("connection", (socket) => {
         sender: entry.bot.username, message: msg,
         type: msg.startsWith("/") ? "command" : "self",
       });
-      if (!msg.startsWith("/")) recordChatLine(entry.bot.username, msg, { bot: true });
+      if (!msg.startsWith("/")) recordChatLine(entry.bot.username, msg, { bot: !entry.aiReplies });
     }
   });
 
@@ -3029,7 +3171,7 @@ io.on("connection", (socket) => {
     const entry = getEntry(input.id);
     if (!entry) return;
     const { field, value } = input;
-    if (field === "autoReconnect" || field === "antiAfk") {
+    if (field === "autoReconnect" || field === "antiAfk" || field === "aiReplies") {
       if (typeof value !== "boolean") return;
       entry[field] = value;
       if (field === "autoReconnect" && !value) clearReconnectTimer(entry);
@@ -3074,26 +3216,26 @@ async function callBridgeAPI(method, endpoint, body) {
   }
 }
 
-async function bridgeSendChat(message, webhookName) {
+async function bridgeSendChat(message, webhookName, avatarName) {
   const result = await callBridgeAPI("POST", "/api/chat", { message: sanitizeMcChat(message) });
   if (result && result.error) {
     console.error(`[MC-Presence] Bridge /api/chat failed: ${result.error}`);
   }
-  sendDiscordWebhook(message, webhookName);
+  sendDiscordWebhook(message, webhookName, avatarName);
   return result;
 }
 
-async function sendDiscordWebhook(message, username) {
+async function sendDiscordWebhook(message, username, avatarName) {
   const url = settings.bridge.discordWebhook;
   if (!url) return;
-  const name = username || "MC Bot";
+  const name = (username || "MC Bot").slice(0, 80); // Discord's limit
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username: name,
-        avatar_url: `https://mc-heads.net/avatar/${encodeURIComponent(name)}/128`,
+        avatar_url: `https://mc-heads.net/avatar/${encodeURIComponent(avatarName || name)}/128`,
         content: message,
         // Chat text is player-influenced; never let it ping @everyone or roles.
         allowed_mentions: { parse: [] },
@@ -3213,6 +3355,10 @@ app.post("/api/plugin-event", (req, res) => {
   // it actually emits*. Track join/quit separately so mineflayer can still
   // surface server-broadcast messages for any type the plugin isn't sending.
   if (event.type === "player_join") bridgeLastAt.join = Date.now();
+  if (event.type === "player_chat" && event.player && event.message) {
+    bridgeLastAt.chat = Date.now();
+    noteBridgeChat(event.player, event.message);
+  }
   if (event.type === "player_quit") bridgeLastAt.quit = Date.now();
 
   // First-time detection via bridge is reliable — mark once globally
@@ -3222,7 +3368,7 @@ app.post("/api/plugin-event", (req, res) => {
   }
 
   // Once per event, not once per session.
-  if (event.type === "player_chat" && isRealPlayer(event.player) && !isAnyBotAccount(event.player) && event.message) {
+  if (event.type === "player_chat" && isRealPlayer(event.player) && !isBotSpeaker(event.player, event.message) && event.message) {
     recordChatLine(event.player, event.message);
     if (/^\s*wb\s*[!.]?\s*$/i.test(event.message)) checkWbWatchers(event.player);
   }
@@ -3265,7 +3411,7 @@ app.post("/api/plugin-event", (req, res) => {
           pushChat(entry, { sender: event.player, message: event.message, type: "chat" });
         }
 
-        if (!isAnyBotAccount(event.player) && entry.botType === "bridge") {
+        if (!isBotSpeaker(event.player, event.message) && entry.botType === "bridge") {
           if (/has made the advancement|has completed the challenge|has reached the goal/i.test(event.message)) break;
           handleAIChat(entry, event.player, event.message, false);
         }
@@ -3295,7 +3441,7 @@ app.post("/api/plugin-event", (req, res) => {
 // the mineflayer server-broadcast parse is per-type so that a plugin which
 // only emits some events (e.g. quits but not joins) doesn't cause messages
 // to vanish entirely.
-const bridgeLastAt = { join: 0, quit: 0 };
+const bridgeLastAt = { join: 0, quit: 0, chat: 0 };
 const BRIDGE_ACTIVE_TTL_MS = 5 * 60 * 1000; // 5 min
 function isBridgeJoinActive() { return Date.now() - bridgeLastAt.join < BRIDGE_ACTIVE_TTL_MS; }
 function isBridgeQuitActive() { return Date.now() - bridgeLastAt.quit < BRIDGE_ACTIVE_TTL_MS; }
@@ -3403,6 +3549,12 @@ app.get("/api/status", (_req, res) => {
   const payload = [];
   for (const [, entry] of bots) payload.push(serializeBot(entry));
   res.json({ bots: payload, settings: publicSettings(), version: APP_VERSION });
+});
+
+app.get("/api/sessions/:id/log", (req, res) => {
+  const entry = bots.get(req.params.id);
+  if (!entry) return res.status(404).json({ error: "no such session" });
+  res.json({ chatLog: entry.chatLog });
 });
 
 app.post("/api/connect/:id", (req, res) => {

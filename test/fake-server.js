@@ -54,6 +54,22 @@ function startFakeServer(port, { host = "127.0.0.1", ambient = false } = {}) {
   server.say = (name, text) => {
     for (const c of playing()) systemChat(c, `<${name}> ${text}`);
   };
+  // A raw server line, as a chat plugin would format it; `to` limits it to
+  // one client (a /msg).
+  server.system = (text, to) => {
+    for (const c of playing()) if (!to || c.username === to) systemChat(c, text);
+  };
+  // Tab-list display name, like a CMI nickname.
+  server.setDisplayName = (name, display) => {
+    const uuid = server.fakePlayers.get(name);
+    if (!uuid) return;
+    for (const c of playing()) {
+      c.write("player_info", {
+        action: { update_display_name: true },
+        data: [{ uuid, displayName: nbt.comp({ text: nbt.string(display) }) }],
+      });
+    }
+  };
 
   server.on("playerJoin", (client) => {
     server.logins++;
@@ -98,9 +114,12 @@ function startAmbient(client, systemChat) {
     listed: 1,
     latency: 20 + Math.floor(Math.random() * 80),
   }));
+  // jeb_ goes by a CMI-style nickname with a rank prefix.
+  const jeb = players.find(p => p.player.name === "jeb_");
+  jeb.displayName = nbt.comp({ text: nbt.string("[Mod] ~Jebby") });
   try {
     client.write("player_info", {
-      action: { add_player: true, update_listed: true, update_latency: true },
+      action: { add_player: true, update_listed: true, update_latency: true, update_display_name: true },
       data: players,
     });
   } catch (err) {
@@ -109,8 +128,10 @@ function startAmbient(client, systemChat) {
   const lines = [
     "<Notch> anyone know where the nether portal is?",
     "Dinnerbone joined the game",
-    "<jeb_> @Grumm check spawn",
+    "[Mod] ~Jebby » @Grumm check spawn",
+    `[~Jebby -> me] hey ${client.username}, got a sec?`,
     "Grumm was slain by Zombie",
+    "[Lands] Tip: claim land with /lands",
   ];
   let i = 0;
   const timer = setInterval(() => {

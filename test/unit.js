@@ -6,6 +6,7 @@
 const assert = require("assert");
 const { ActivityTracker, describePrediction, HOUR, DAY } = require("../lib/activity");
 const { Transcript, NotesStore, replyCandidate, isSilentReply, parseJsonObject } = require("../lib/chat-context");
+const { parseChatLine, leadingSpeaker, AliasBook } = require("../lib/chat-parse");
 
 const results = [];
 function test(name, fn) {
@@ -152,6 +153,51 @@ test("notes: model edits are applied safely", () => {
   assert.ok(saved.notes.length === 2);
   assert.deepStrictEqual(parseJsonObject('sure:\n```json\n{"add":[],"remove":[]}\n```'), { add: [], remove: [] });
   assert.strictEqual(parseJsonObject("nothing here"), null);
+});
+
+const TAB = [
+  { username: "Steve", display: "Steve" },
+  { username: "Notch", display: "~Nicky" },              // CMI nickname
+  { username: "jeb_", display: "[Mod] Jebby" },          // prefix in the display name
+  { username: "Dinnerbone", display: "Dinner Bone" },    // nickname with a space
+];
+const who = (line) => { const r = parseChatLine(line, TAB); return r && [r.kind, r.player && r.player.username, r.shown, r.message]; };
+
+test("chat formats resolve to the real player, nicknames included", () => {
+  assert.deepStrictEqual(who("<Steve> hello"), ["chat", "Steve", "Steve", "hello"]);
+  assert.deepStrictEqual(who("[Member] ~Nicky » anyone up for mining?"), ["chat", "Notch", "Nicky", "anyone up for mining?"]);
+  assert.deepStrictEqual(who("§7[Member] §d~Nicky§8: hi all"), ["chat", "Notch", "Nicky", "hi all"]);
+  assert.deepStrictEqual(who("[Mod] Jebby: welcome!"), ["chat", "jeb_", "Jebby", "welcome!"]);
+  assert.deepStrictEqual(who("Dinner Bone > lol"), ["chat", "Dinnerbone", "Dinner Bone", "lol"]);
+  const broadcast = parseChatLine("[Lands] Tip: claim land with /lands", TAB);
+  assert.ok(broadcast.unresolved && !broadcast.nickMarked, "plugin broadcasts aren't attributed to a player");
+});
+
+test("whisper formats are whispers; our own outgoing ones are recognised", () => {
+  assert.deepStrictEqual(who("Steve whispers to you: psst"), ["whisper", "Steve", "Steve", "psst"]);
+  assert.deepStrictEqual(who("[~Nicky -> me] are you there?"), ["whisper", "Notch", "Nicky", "are you there?"]);
+  assert.deepStrictEqual(who("[Mod] Jebby -> You: hey"), ["whisper", "jeb_", "Jebby", "hey"]);
+  assert.strictEqual(who("You whisper to Steve: hi")[0], "outgoing");
+  assert.strictEqual(who("[me -> Steve] hi")[0], "outgoing");
+});
+
+test("nicknames missing from the tab list come back unresolved, then resolve once learned", () => {
+  const tab = [{ username: "Notch", display: "Notch" }];
+  const r = parseChatLine("[Member] ~Nicky » hi there", tab);
+  assert.deepStrictEqual([r.kind, r.unresolved, r.name, r.nickMarked, r.message], ["chat", true, "Nicky", true, "hi there"]);
+  assert.strictEqual(parseChatLine("[Lands] Tip: claim land", tab).nickMarked, false);
+  let saved;
+  const book = new AliasBook({ save: (d) => { saved = d; } });
+  assert.strictEqual(book.learn("~Nicky", "Notch"), true);
+  assert.deepStrictEqual(saved, { aliases: { nicky: { alias: "Nicky", real: "Notch" } } });
+  const r2 = parseChatLine("[Member] ~Nicky » hi again", tab.concat(book.entriesFor(["Notch"])));
+  assert.deepStrictEqual([r2.kind, r2.player.username, r2.shown], ["chat", "Notch", "Nicky"]);
+  assert.deepStrictEqual(book.entriesFor(["Steve"]), [], "aliases only apply to players who are online");
+});
+
+test("a bridge bot's broadcast is attributed to it", () => {
+  assert.strictEqual(leadingSpeaker("CobbleBot » Welcome!"), "CobbleBot");
+  assert.strictEqual(leadingSpeaker("[Bot] CobbleBot » Welcome!"), "CobbleBot");
 });
 
 const failed = results.filter(r => !r).length;

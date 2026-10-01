@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.5.0
+
+### Fixes
+- **The support bot ignored the owner.**
+  - Any player whose name matched a dashboard session counted as a bot, even when that session was offline. So the operator's own account was never answered, even while they played on it themselves.
+  - Accounts now only count as bots while a session is actually playing on them.
+- **Nicknamed players' chat showed as "Server" lines, and plugin private messages were lost.**
+  - Mineflayer's chat and whisper events guess the speaker from the rendered text. CMI's `~Nick` came through as `Nick`, failed the lookup, and was shown as a server line with no AI handling.
+  - Any chat or `/msg` format that didn't look vanilla was dropped entirely.
+- **Typing on iPhone zoomed the page.** iOS zooms into any focused field with text under 16px, and every dashboard field was 12–14px. Touch devices now get 16px fields. Pinch-zoom still works, and double-tap zoom on buttons is off.
+
+### Chat attribution (CMI and other chat plugins)
+- **Signed player chat is read from the packet.** The sender's UUID gives the real account whatever nickname or prefix is shown, and the chat type says whether it's a whisper.
+- **Plugin-formatted chat and `/msg` are parsed against the tab list,** by real name or display name. It handles:
+  - rank prefixes like `[Member]`;
+  - CMI's `~` nickname marker;
+  - separators `»`, `:`, `>`, `▶`;
+  - private-message formats `[Name -> me]`, `Name -> You:`, `From Name:` and `Name whispers to you:`.
+- **Nicknames are learned from CobbleBridge.**
+  - CobbleBridge reports the real sender of every chat message. When an in-game line from an unknown name matches one, the nickname is remembered in `data/aliases.json`.
+  - From then on it resolves even when the tab list shows real names.
+  - Without that evidence, `~Nick` lines and whispers are still treated as player chat.
+- **Nothing is silently dropped.** Unrecognised server lines (plugin broadcasts, tips) now show as server messages.
+- **The dashboard shows nicknames with the real username beside them,** and uses the real account's skin.
+- **Whispers never group under public messages,** so the "whisper" label stays visible.
+
+### Support bot
+- **"Support bot replies to this account" (per session).**
+  - Lets you test the support bot by chatting as one of the app's own accounts from the dashboard.
+  - That session's automatic messages (greetings, AFK replies) are still ignored, so bots can't loop.
+- **Virtual (CobbleBridge) bots show as `[Bot] Name`** in the Discord webhook and the dashboard. Mentions still use the plain name, and the webhook avatar uses the real name's skin.
+  - In-game the name comes from CobbleBridge's own `virtual-player.chat-format`. Add `[Bot]` there, e.g. `"&7[Bot] &d{name} &8» &7{message}"`.
+
+### Other
+- `GET /api/sessions/:id/log` returns a session's chat log.
+- `npm test` adds parser tests and a CobbleBridge + Discord suite. That suite runs against a fake plugin and a fake webhook, and checks that every bridge-bot message reaches Discord as `[Bot] Name`, with mentions disabled, and that a Discord outage doesn't break in-game chat.
+
 ## v2.4.0
 
 ### Support bot

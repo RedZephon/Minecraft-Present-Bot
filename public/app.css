@@ -1812,3 +1812,29 @@ button.toggle { padding: 0; border: 0; }
 .note-add input { flex: 1; min-width: 0; }
 .activity-panel { font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
 .activity-panel p + p { margin-top: 6px; }
+
+/* ───────── TOUCH DEVICES ─────────
+   iOS Safari zooms the page when a focused field's text is under 16px, which
+   every input here was (12–14px). 16px on touch screens stops that without
+   disabling pinch-zoom. touch-action stops double-tap zoom on controls. */
+@media (hover: none) and (pointer: coarse) {
+  input, select, textarea,
+  .chat-input input,
+  .details-section .field input,
+  .details-section .field select,
+  .assistant-name-input,
+  .settings-pane input,
+  .settings-pane select,
+  .settings-pane textarea,
+  .command-palette-input input {
+    font-size: 16px !important;
+  }
+}
+button, [role="button"], [role="switch"], .toggle, a, label, select { touch-action: manipulation; }
+
+/* Nicknamed players: the real Minecraft name next to the nickname */
+.real-name {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-tertiary);
+}

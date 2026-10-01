@@ -67,11 +67,18 @@ async function main() {
     timezone: "America/Edmonton",
     ai: { responseDelayMs: 0, cooldownSeconds: 0 },
     maintenance: { enabled: false, start: "01:59", end: "02:05" },
+    bridge: { secret: "test-secret" },
   }));
   fs.writeFileSync(path.join(dataDir, "bots.json"), JSON.stringify([
     { id: "helper", label: "Helper", username: "Helper", auth: "offline", mode: "manual", aiMode: "support", antiAfk: false },
     { id: "afker", label: "Afker", username: "Afker", auth: "offline", mode: "manual", aiMode: "afk", antiAfk: true },
     { id: "notowner", label: "NotOwner", username: "NotOwner", auth: "offline", mode: "manual", aiMode: "admin-afk", antiAfk: false },
+    // The owner's own account has a session too, but it stays offline here:
+    // the human is playing on it.
+    { id: "redzephon", label: "RedZephon", username: "RedZephon", auth: "offline", mode: "manual", aiMode: "admin-afk" },
+    // Two dashboard-played accounts: one opted in to support-bot replies.
+    { id: "tester", label: "Tester", username: "Tester", auth: "offline", mode: "manual", aiReplies: true, antiAfk: false },
+    { id: "quiet", label: "Quiet", username: "Quiet", auth: "offline", mode: "manual", antiAfk: false },
   ]));
 
   const fake = startFakeServer(mcPort);
@@ -102,6 +109,7 @@ async function main() {
 
   const status = async () => (await fetch(`${base}/api/status`)).json();
   const session = async (id) => (await status()).bots.find(b => b.id === id);
+  const chatLog = async (id) => (await (await fetch(`${base}/api/sessions/${id}/log`)).json()).chatLog;
   const results = [];
   const test = async (name, fn) => {
     try { await fn(); results.push(true); console.log(`  ok   ${name}`); }
@@ -109,12 +117,17 @@ async function main() {
   };
   const chatsFrom = (n) => fake.chats.slice(n);
   const replyRequests = () => api.requests.filter(r => !isNotes(r));
+  const bridgeEvent = (event) => fetch(`${base}/api/plugin-event`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bridge-Secret": "test-secret" },
+    body: JSON.stringify(event),
+  });
 
   try {
     console.log("AI behaviour tests");
     await waitFor(() => output.includes("dashboard on"), { what: "dashboard" });
-    for (const id of ["helper", "afker", "notowner"]) await fetch(`${base}/api/connect/${id}`, { method: "POST" });
-    await waitFor(async () => (await status()).bots.every(b => b.state === "connected"), { what: "all connected" });
+    for (const id of ["helper", "afker", "notowner", "tester", "quiet"]) await fetch(`${base}/api/connect/${id}`, { method: "POST" });
+    await waitFor(async () => (await status()).bots.filter(b => b.id !== "redzephon").every(b => b.state === "connected"), { what: "all connected" });
 
     await test("AFK mode sets /afk on spawn", async () => {
       await waitFor(() => fake.chats.filter(c => c === "/afk").length >= 2, { what: "/afk", timeout: 8000 });
@@ -208,6 +221,86 @@ async function main() {
       assert.strictEqual(replyRequests().length, reqsBefore);
     });
 
+    // The bot sends at most 5 lines per 30 s; let the window clear.
+    await sleep(30_000);
+
+    await test("the owner is answered when their own account's session is offline", async () => {
+      api.respond = (r) => (userText(r).includes("are you there") ? "Yep, here! What do you need, RedZephon?" : "[silent]");
+      const before = fake.chats.length;
+      await sleep(1000);
+      fake.say("RedZephon", "@Helper are you there?");
+      await waitFor(() => chatsFrom(before).includes("Yep, here! What do you need, RedZephon?"), { what: "reply to owner" });
+    });
+
+    await test("a nicknamed player's plugin-formatted chat is attributed to them and answered", async () => {
+      fake.setDisplayName("Alex", "~Lexi");
+      await sleep(500);
+      api.respond = (r) => (userText(r).includes("spawn command") ? "It's /spawn, Alex!" : "[silent]");
+      const before = fake.chats.length;
+      fake.system("[Member] ~Lexi » @Helper what's the spawn command?");
+      const req = await waitFor(() => replyRequests().find(r => userText(r).includes("spawn command")), { what: "nickname request" });
+      assert.match(userText(req), /Alex mentioned you/);
+      await waitFor(() => chatsFrom(before).includes("It's /spawn, Alex!"), { what: "nickname reply" });
+      const line = (await chatLog("helper")).find(m => m.message === "@Helper what's the spawn command?");
+      assert.ok(line, "the line is in the dashboard log");
+      assert.strictEqual(line.sender, "Lexi");
+      assert.strictEqual(line.realName, "Alex");
+      assert.strictEqual(line.type, "chat");
+    });
+
+    await test("a plugin /msg is a whisper and is answered privately", async () => {
+      api.respond = (r) => (userText(r).includes("whispered to you privately") ? "Sure, what's up?" : "[silent]");
+      const before = fake.chats.length;
+      fake.system("[~Lexi -> me] can you help me with something?", "Helper");
+      await waitFor(() => chatsFrom(before).includes("/msg Alex Sure, what's up?"), { what: "private reply" });
+      const line = (await chatLog("helper")).find(m => m.message === "can you help me with something?");
+      assert.strictEqual(line && line.type, "whisper");
+    });
+
+    await test("dashboard-played accounts are ignored unless opted in", async () => {
+      fake.addPlayer("Tester");
+      fake.addPlayer("Quiet");
+      await sleep(1500);
+      api.respond = (r) => (userText(r).includes("testing 123") ? "Got you loud and clear!" : "[silent]");
+      const reqsBefore = replyRequests().length;
+      fake.say("Quiet", "@Helper testing 123");
+      await sleep(2000);
+      assert.strictEqual(replyRequests().length, reqsBefore, "a bot account without the toggle was answered");
+      const before = fake.chats.length;
+      fake.say("Tester", "@Helper testing 123");
+      await waitFor(() => chatsFrom(before).includes("Got you loud and clear!"), { what: "opted-in reply" });
+    });
+
+    await sleep(30_000); // let the send-rate window clear again
+
+    await test("CMI nicknames are learned from CobbleBridge and resolved from then on", async () => {
+      fake.addPlayer("Steve"); // tab list shows the real name only
+      await sleep(4000);
+      await bridgeEvent({ type: "player_chat", player: "Steve", message: "back again" }); // bridge is active
+      api.respond = (r) => (userText(r).includes("hello from my nick") ? "Hi Steve!" : "[silent]");
+      const before = fake.chats.length;
+      // The in-game line lands first; CobbleBridge's event for it a moment later.
+      fake.system("[Member] ~Stevo » @Helper hello from my nick");
+      await sleep(300);
+      await bridgeEvent({ type: "player_chat", player: "Steve", message: "@Helper hello from my nick" });
+      const req = await waitFor(() => replyRequests().find(r => userText(r).includes("hello from my nick")), { what: "nick request" });
+      assert.match(userText(req), /Steve mentioned you/);
+      await waitFor(() => chatsFrom(before).includes("Hi Steve!"), { what: "nick reply" });
+      const line = (await chatLog("helper")).find(m => m.message === "@Helper hello from my nick");
+      assert.deepStrictEqual([line.sender, line.realName], ["Stevo", "Steve"]);
+      const saved = JSON.parse(fs.readFileSync(path.join(dataDir, "aliases.json"), "utf8"));
+      assert.deepStrictEqual(saved.aliases.stevo, { alias: "Stevo", real: "Steve" });
+
+      // From now on the alias alone is enough — no bridge event needed.
+      fake.system("[Member] ~Stevo » just chatting");
+      await waitFor(async () => (await chatLog("helper")).some(m => m.message === "just chatting" && m.realName === "Steve"), { what: "alias resolution" });
+    });
+
+    await test("unrecognised server lines are shown, not dropped", async () => {
+      fake.system("[Lands] Tip: claim land with /lands");
+      await waitFor(async () => (await chatLog("helper")).some(m => m.type === "server" && m.message === "[Lands] Tip: claim land with /lands"), { what: "server line" });
+    });
+
     await test("SIGTERM still shuts down cleanly and saves activity", async () => {
       dash.kill("SIGTERM");
       const code = await new Promise(r => dash.once("exit", r));
@@ -226,7 +319,7 @@ async function main() {
   const failed = results.filter(r => !r).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   if (failed) {
-    console.log("\n--- dashboard output ---\n" + output.split("\n").slice(-60).join("\n"));
+    console.log("\n--- dashboard output ---\n" + output.split("\n").filter(l => /AI|Greeting|Rate|RedZephon|silence/.test(l)).slice(-40).join("\n"));
     process.exit(1);
   }
   process.exit(0);
