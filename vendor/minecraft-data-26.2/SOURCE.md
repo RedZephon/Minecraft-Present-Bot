@@ -12,6 +12,13 @@ everything else borrowed from 26.1). That copy was an older draft: its `teams`
 packet layout was wrong, and borrowing 26.1's registries meant every block
 state from `calcite` upward decoded as the wrong block (26.2 added 28 blocks).
 
+One local correction on top of that commit: `jukebox_playable` in
+`protocol.json` is a plain `Holder<JukeboxSong>` (varint id+1, or 0 + inline
+song). Upstream still has the 1.21.x `EitherHolder` layout (a bool, then holder
+or key), which is wrong for 26.x and breaks every item stack that carries the
+component, e.g. a custom disc in a stonecutter recipe. Upstream has the same bug
+for 26.1, so check it before switching to a native 26.2.
+
 `scripts/patch-dependencies.js` injects these files into the installed
 `minecraft-data` on `postinstall` and verifies the result. It no-ops once
 `minecraft-data` ships 26.2 natively — at that point delete this directory.

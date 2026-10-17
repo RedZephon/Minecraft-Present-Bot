@@ -1359,35 +1359,14 @@
                 ],
                 "ominous_bottle_amplifier": "varint",
                 "jukebox_playable": [
-                  "container",
-                  [
-                    {
-                      "name": "hasHolder",
-                      "type": "bool"
-                    },
-                    {
-                      "name": "song",
-                      "type": [
-                        "switch",
-                        {
-                          "compareTo": "hasHolder",
-                          "fields": {
-                            "true": [
-                              "registryEntryHolder",
-                              {
-                                "baseName": "songId",
-                                "otherwise": {
-                                  "name": "data",
-                                  "type": "JukeboxSongData"
-                                }
-                              }
-                            ],
-                            "false": "string"
-                          }
-                        }
-                      ]
+                  "registryEntryHolder",
+                  {
+                    "baseName": "songId",
+                    "otherwise": {
+                      "name": "data",
+                      "type": "JukeboxSongData"
                     }
-                  ]
+                  }
                 ],
                 "provides_banner_patterns": "string",
                 "recipes": "anonymousNbt",

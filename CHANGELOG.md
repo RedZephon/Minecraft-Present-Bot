@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.3
+
+### Fixes
+- **Bots stuck in a join loop on servers with custom music discs.**
+  - On 26.x, `jukebox_playable` is sent as a plain song reference. The vendored 26.2 data still used the 1.21.x layout (a flag byte, then song or key), so any item that sets the component threw the parser off.
+  - Vanilla discs never send it (it's their default). A server whose stonecutter recipes produce custom discs sends it in the join-time recipe packet, so the bot never received `update_health`, never spawned, got kicked for keepalive timeout, and the 45 s watchdog reconnected it every few minutes.
+  - Symptom in the session log: `Parse error for play.toClient: … array size is abnormally large`.
+
 ## v2.5.2
 
 ### Fixes
